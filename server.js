@@ -4,8 +4,6 @@ const fetch = require('node-fetch');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
-
-// ⚠️ يتم استقبال الطلبات من الـ Worker الخاص بك
 const CF_WORKER_URL = "https://xt.gamerdz1517.com"; 
 
 app.use(cors({ origin: '*' }));
@@ -42,7 +40,6 @@ function isAdultContent(name) {
     return /porn|xxx|adult|18\+|erotic|sex|adults/i.test(name.toLowerCase());
 }
 
-// 🛡️ قالب الاستجابة القياسي لتفادي أخطاء المشغلات
 function safeFallback(action) {
     let timeNow = new Date().toISOString().replace('T', ' ').substring(0, 19);
     if (action === "") {
@@ -67,32 +64,28 @@ async function callStalkerProxy(serverUrl, macAddress, stalkerType, stalkerActio
     } catch(e) { return null; }
 }
 
-// 🚀 الخدعة السحرية لحل (فخ الجروب الواحد) بدون إحداث Crash!
 async function fetchContentStrict(server, mac, type, allowedIds, categoryId, token, extraParam = "") {
     let genreParam = type === "itv" ? "genre" : "category";
     let targetCat = (categoryId && categoryId !== "0" && categoryId !== "*" && categoryId !== "null" && categoryId !== "undefined") ? categoryId : "";
     let extraQuery = extraParam ? `&${extraParam}` : "";
 
-    // 1️⃣ استخراج الجروبات التي يجب الدوران عليها
     let catsToFetch = [];
     if (targetCat !== "") {
-        catsToFetch = [targetCat]; // إذا طلب التطبيق جروباً محدداً
+        catsToFetch = [targetCat];
     } else {
         if (allowedIds.includes('ALL')) {
-            // إذا كان المسموح "الكل"، نجلب الجروبات الأصلية لكي نمر عليها واحداً تلو الآخر
             let catRes = await callStalkerProxy(server, mac, type, type === "itv" ? "get_genres" : "get_categories", token);
             let list = catRes?.js ? (Array.isArray(catRes.js) ? catRes.js : Object.values(catRes.js)) : [];
             catsToFetch = list.map(c => String(c.id));
-            if (catsToFetch.length === 0) catsToFetch = [""]; // احتياطي
+            if (catsToFetch.length === 0) catsToFetch = [""]; 
         } else {
-            catsToFetch = allowedIds; // نمر على الجروبات المحددة فقط
+            catsToFetch = allowedIds; 
         }
     }
 
     let allItems = [];
     let batchSize = 8; 
 
-    // 2️⃣ الدوران على الجروبات لضمان جلب كل القنوات المختارة 100%
     for (let catId of catsToFetch) {
         let catQuery = catId !== "" ? `&${genreParam}=${catId}` : "";
         let currentPage = 1;
@@ -121,7 +114,6 @@ async function fetchContentStrict(server, mac, type, allowedIds, categoryId, tok
                         let item = pageData[x];
                         let itemCatId = String(item.tv_genre_id || item.category_id || catId || targetCat || "0");
 
-                        // 🛡️ فلترة القنوات اليتيمة لمنع كراش شامل تيفي
                         if (allowedIds.includes('ALL') || allowedIds.includes(itemCatId) || extraParam !== "") {
                             item.injected_cat_id = itemCatId; 
                             allItems.push(item);
@@ -135,7 +127,6 @@ async function fetchContentStrict(server, mac, type, allowedIds, categoryId, tok
         }
     }
 
-    // تنظيف التكرار
     let uniqueMap = new Map();
     for (let item of allItems) {
         let id = item.id || item.cmd;
@@ -144,6 +135,69 @@ async function fetchContentStrict(server, mac, type, allowedIds, categoryId, tok
     }
     return Array.from(uniqueMap.values());
 }
+
+// 🚀 هذا المسار الجديد لتوليد ملف الـ M3U المحمي
+app.get('/get.php', async (req, res) => {
+    let username = (req.query.username || "").trim();
+    let password = (req.query.password || "").trim();
+
+    let authData = getAuthData(req);
+    if (!authData || authData.mac.toLowerCase() !== username.toLowerCase()) return res.status(403).send("Unauthorized");
+
+    let portalServer = authData.srv;
+    let stalkerMac = authData.mac; 
+    let sel = authData.selections || { l: [], v: [], s: [] };
+
+    let host = req.headers['x-forwarded-host'] || req.get('host');
+    let fullUrl = `http://${host}`;
+
+    try {
+        let handshakeRes = await callStalkerProxy(portalServer, stalkerMac, "stb", "handshake");
+        let stalkerToken = handshakeRes?.js?.token;
+        if (!stalkerToken) return res.status(403).send("MAC Blocked");
+
+        let m3uContent = "#EXTM3U\n";
+        
+        // 1. القنوات المباشرة
+        if (sel.l && sel.l.length > 0) {
+            let catRes = await callStalkerProxy(portalServer, stalkerMac, "itv", "get_genres", stalkerToken);
+            let catList = catRes?.js ? (Array.isArray(catRes.js) ? catRes.js : Object.values(catRes.js)) : [];
+            let catMap = {}; catList.forEach(c => catMap[String(c.id)] = c.title || c.name);
+
+            let channels = await fetchContentStrict(portalServer, stalkerMac, "itv", sel.l, null, stalkerToken);
+            for(let ch of channels) {
+                let cId = String(ch.injected_cat_id || "0");
+                let cName = catMap[cId] || "Live";
+                let logo = ch.logo || "";
+                let name = ch.name || "Unknown";
+                m3uContent += `#EXTINF:-1 tvg-id="" tvg-name="${name}" tvg-logo="${logo}" group-title="${cName} by ᴳᴬᴹᴱᴿᴰᶻ¹⁵¹⁷",${name}\n`;
+                m3uContent += `${fullUrl}/live/${username}/${password}/${ch.id}.ts\n`;
+            }
+        }
+
+        // 2. الأفلام VOD
+        if (sel.v && sel.v.length > 0) {
+            let catRes = await callStalkerProxy(portalServer, stalkerMac, "vod", "get_categories", stalkerToken);
+            let catList = catRes?.js ? (Array.isArray(catRes.js) ? catRes.js : Object.values(catRes.js)) : [];
+            let catMap = {}; catList.forEach(c => catMap[String(c.id)] = c.title || c.name);
+
+            let vods = await fetchContentStrict(portalServer, stalkerMac, "vod", sel.v, null, stalkerToken);
+            for(let v of vods) {
+                if(isAdultContent(v.name)) continue;
+                let cId = String(v.injected_cat_id || "0");
+                let cName = catMap[cId] || "Movies";
+                let logo = v.screenshot_uri || v.logo || "";
+                let name = v.name || v.cmd;
+                m3uContent += `#EXTINF:-1 tvg-id="" tvg-name="${name}" tvg-logo="${logo}" group-title="${cName} by ᴳᴬᴹᴱᴿᴰᶻ¹⁵¹⁷",${name}\n`;
+                m3uContent += `${fullUrl}/movie/${username}/${password}/${v.id}.mkv\n`;
+            }
+        }
+
+        res.setHeader('Content-Type', 'application/vnd.apple.mpegurl; charset=utf-8');
+        res.setHeader('Content-Disposition', `attachment; filename="GAMERDZ1517_${username}.m3u"`);
+        return res.send(m3uContent);
+    } catch(e) { return res.status(500).send("Error generating M3U"); }
+});
 
 app.all(['/player_api.php', '/panel_api.php', '/xmltv.php'], async (req, res) => {
     let username = (req.query.username || req.body.username || "").trim();
@@ -188,7 +242,6 @@ app.all(['/player_api.php', '/panel_api.php', '/xmltv.php'], async (req, res) =>
 
         let responseData = [];
 
-        // 🎯 جلب الفئات
         if (apiAction === "get_live_categories") {
             let r = await callStalkerProxy(portalServer, stalkerMac, "itv", "get_genres", stalkerToken);
             let list = r?.js ? (Array.isArray(r.js) ? r.js : Object.values(r.js)) : [];
@@ -208,101 +261,46 @@ app.all(['/player_api.php', '/panel_api.php', '/xmltv.php'], async (req, res) =>
             responseData = list.map(c => ({ category_id: String(c.id), category_name: String(c.title || c.name), parent_id: 0 }));
         } 
         
-        // 🎯 جلب القنوات بأنواع بيانات مطابقة تماما لكودك القديم (بدون أي تعديل على الهيكلة)
         else if (apiAction === "get_live_streams") {
             let reqCat = (categoryId && categoryId !== "null" && categoryId !== "*" && categoryId !== "0") ? String(categoryId) : null;
             if (reqCat && !sel.l.includes('ALL') && !sel.l.includes(reqCat)) return res.json([]);
-            
             let channels = await fetchContentStrict(portalServer, stalkerMac, "itv", sel.l, categoryId, stalkerToken);
-            
-            if (!reqCat && !sel.l.includes('ALL')) {
-                channels = channels.filter(ch => sel.l.includes(String(ch.tv_genre_id || ch.category_id)));
-            }
-
             responseData = channels.map(ch => ({
-                num: parseInt(ch.number || ch.id) || 0,
-                name: String(ch.name || "Unknown"),
-                stream_type: "live",
-                stream_id: parseInt(ch.id) || 0,
-                stream_icon: String(ch.logo || ""),
-                epg_channel_id: null,
-                added: "1",
-                category_id: String(ch.injected_cat_id || ch.tv_genre_id || ch.category_id || reqCat || "0"),
-                custom_sid: "",
-                tv_archive: parseInt(ch.tv_archive) || 0,
-                direct_source: "",
-                tv_archive_duration: 0
+                num: parseInt(ch.number || ch.id) || 0, name: String(ch.name || "Unknown"), stream_type: "live", stream_id: parseInt(ch.id) || 0, stream_icon: String(ch.logo || ""), epg_channel_id: null, added: "1", category_id: String(ch.injected_cat_id || "0"), custom_sid: "", tv_archive: parseInt(ch.tv_archive) || 0, direct_source: "", tv_archive_duration: 0
             }));
         } 
         else if (apiAction === "get_vod_streams") {
             let reqCat = (categoryId && categoryId !== "null" && categoryId !== "*" && categoryId !== "0") ? String(categoryId) : null;
             if (reqCat && !sel.v.includes('ALL') && !sel.v.includes(reqCat)) return res.json([]);
-            
             let vods = await fetchContentStrict(portalServer, stalkerMac, "vod", sel.v, categoryId, stalkerToken);
-            
-            if (!reqCat && !sel.v.includes('ALL')) {
-                vods = vods.filter(v => sel.v.includes(String(v.category_id)));
-            }
-
             responseData = vods.filter(v => !isAdultContent(v.name)).map(v => ({
-                num: parseInt(v.id) || 0,
-                name: String(v.name || v.cmd),
-                stream_type: "movie",
-                stream_id: parseInt(v.id) || 0,
-                stream_icon: String(v.screenshot_uri || v.logo || ""),
-                added: "1",
-                category_id: String(v.category_id || reqCat || "0"),
-                container_extension: "mkv",
-                rating: String(v.rating || "5"),
-                rating_5based: 5.0,
-                custom_sid: "",
-                direct_source: ""
+                num: parseInt(v.id) || 0, name: String(v.name || v.cmd), stream_type: "movie", stream_id: parseInt(v.id) || 0, stream_icon: String(v.screenshot_uri || v.logo || ""), added: "1", category_id: String(v.injected_cat_id || "0"), container_extension: "mkv", rating: String(v.rating || "5"), rating_5based: 5.0, custom_sid: "", direct_source: ""
             }));
         } 
         else if (apiAction === "get_series") {
             let reqCat = (categoryId && categoryId !== "null" && categoryId !== "*" && categoryId !== "0") ? String(categoryId) : null;
             if (reqCat && !sel.s.includes('ALL') && !sel.s.includes(reqCat)) return res.json([]);
-            
             let series = await fetchContentStrict(portalServer, stalkerMac, "series", sel.s, categoryId, stalkerToken);
-            
-            if (!reqCat && !sel.s.includes('ALL')) {
-                series = series.filter(s => sel.s.includes(String(s.category_id)));
-            }
-
             responseData = series.filter(s => !isAdultContent(s.name)).map(s => ({
-                num: parseInt(s.id) || 0,
-                name: String(s.name),
-                series_id: parseInt(s.id) || 0,
-                cover: String(s.screenshot_uri || s.logo || ""),
-                category_id: String(s.category_id || reqCat || "0"),
-                plot: "", cast: "", director: "", genre: "", releaseDate: "", rating: "5", rating_5based: 5.0, backdrop_path: []
+                num: parseInt(s.id) || 0, name: String(s.name), series_id: parseInt(s.id) || 0, cover: String(s.screenshot_uri || s.logo || ""), category_id: String(s.injected_cat_id || "0"), plot: "", cast: "", director: "", genre: "", releaseDate: "", rating: "5", rating_5based: 5.0, backdrop_path: []
             }));
         }
         else if (apiAction === "get_series_info" && seriesId) {
             try {
                 let data = await fetchContentStrict(portalServer, stalkerMac, "series", ['ALL'], null, stalkerToken, `&movie_id=${seriesId}&season_id=0&episode_id=0`);
                 let seasonsInfo = []; let epsObj = {}; let seasonIndex = 1;
-                
                 if (data.length > 0) {
                     for (let season of data) {
                         let seasonCmd = season.cmd;
                         if (!seasonCmd) continue;
                         let episodesArr = season.series; 
                         if (!Array.isArray(episodesArr) || episodesArr.length === 0) continue;
-
                         let sNum = String(season.season || seasonIndex);
                         if (!epsObj[sNum]) epsObj[sNum] = [];
-
                         for (let ep of episodesArr) {
                             let episodeNum = String(ep);
                             let streamIdRaw = encodeSafeBase64(`${seasonCmd}::::${episodeNum}`);
-                            
-                            epsObj[sNum].push({ 
-                                id: streamIdRaw, 
-                                episode_num: episodeNum, title: `Episode ${episodeNum}`, container_extension: "mkv", 
-                                info: { movie_image: String(season.screenshot_uri || season.cover || ""), plot: "", releasedate: "", rating: "5", rating_5based: 5.0, duration_secs: 0, duration: "" }, 
-                                custom_sid: "", added: "1", season: parseInt(sNum), direct_source: ""
-                            });
+                            epsObj[sNum].push({ id: streamIdRaw, episode_num: episodeNum, title: `Episode ${episodeNum}`, container_extension: "mkv", info: { movie_image: String(season.screenshot_uri || season.cover || ""), plot: "", releasedate: "", rating: "5", rating_5based: 5.0, duration_secs: 0, duration: "" }, custom_sid: "", added: "1", season: parseInt(sNum), direct_source: "" });
                         }
                         seasonsInfo.push({ air_date: "", episode_count: episodesArr.length, id: parseInt(sNum), name: `Season ${sNum}`, overview: "", season_number: parseInt(sNum), cover: "", cover_big: "" });
                         seasonIndex++;
