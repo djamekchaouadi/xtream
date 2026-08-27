@@ -5,7 +5,7 @@ const fetch = require('node-fetch');
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// ⚠️ ضع رابط Cloudflare Worker الخاص بك
+// ⚠️ يتم استقبال الطلبات من الـ Worker الخاص بك
 const CF_WORKER_URL = "https://xt.gamerdz1517.com"; 
 
 app.use(cors({ origin: '*' }));
@@ -13,11 +13,8 @@ app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ limit: '50mb', extended: true }));
 
 function encodeSafeBase64(str) {
-    try {
-        return Buffer.from(unescape(encodeURIComponent(str))).toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
-    } catch(e) {
-        return Buffer.from(str).toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
-    }
+    try { return Buffer.from(unescape(encodeURIComponent(str))).toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, ''); } 
+    catch(e) { return Buffer.from(str).toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, ''); }
 }
 
 function decodeSafeBase64(str) {
@@ -45,7 +42,7 @@ function isAdultContent(name) {
     return /porn|xxx|adult|18\+|erotic|sex|adults/i.test(name.toLowerCase());
 }
 
-// 🛡️ درع الحماية لمنع الانهيار
+// 🛡️ قالب الاستجابة القياسي لتفادي أخطاء المشغلات
 function safeFallback(action) {
     let timeNow = new Date().toISOString().replace('T', ' ').substring(0, 19);
     if (action === "") {
@@ -70,29 +67,22 @@ async function callStalkerProxy(serverUrl, macAddress, stalkerType, stalkerActio
     } catch(e) { return null; }
 }
 
-// 🚀 محرك السحب الأصلي الخاص بك (لكنه الآن يفلتر الجروبات داخلياً لمنع الانهيار)
 async function fetchContentStrict(server, mac, type, allowedIds, categoryId, token, extraParam = "") {
     let genreParam = type === "itv" ? "genre" : "category";
-
-    let targetCat = "";
-    if (categoryId && categoryId !== "0" && categoryId !== "*" && categoryId !== "null" && categoryId !== "undefined") {
-        targetCat = categoryId;
-    }
-
+    let targetCat = (categoryId && categoryId !== "0" && categoryId !== "*" && categoryId !== "null" && categoryId !== "undefined") ? categoryId : "";
     let catQuery = targetCat ? `&${genreParam}=${targetCat}` : "";
     let extraQuery = extraParam ? `&${extraParam}` : "";
 
     let allItems = [];
     let currentPage = 1;
-    let batchSize = 5; // عدنا للرقم 5 السحري لتفادي حظر Stalker (Anti-DDoS)
+    let batchSize = 8; 
     let keepGoing = true;
 
-    while (keepGoing && currentPage <= 45) { 
+    while (keepGoing && currentPage <= 100) { 
         let promises = [];
         for (let i = 0; i < batchSize; i++) {
             let page = currentPage + i;
-            let urlAction = `get_ordered_list${catQuery}${extraQuery}&limit=5000&p=${page}`;
-            promises.push(callStalkerProxy(server, mac, type, urlAction, token));
+            promises.push(callStalkerProxy(server, mac, type, `get_ordered_list${catQuery}${extraQuery}&limit=5000&p=${page}`, token));
         }
         
         let chunkResults = await Promise.all(promises);
@@ -101,7 +91,6 @@ async function fetchContentStrict(server, mac, type, allowedIds, categoryId, tok
         for (let res of chunkResults) {
             let pageData = res?.js?.data || res?.js;
             if (!pageData) continue;
-
             if (!Array.isArray(pageData)) {
                 if (typeof pageData === 'object' && Object.keys(pageData).length > 0) pageData = Object.values(pageData);
                 else pageData = [];
@@ -112,20 +101,16 @@ async function fetchContentStrict(server, mac, type, allowedIds, categoryId, tok
                     let item = pageData[x];
                     let itemCatId = String(item.tv_genre_id || item.category_id || targetCat || "0");
 
-                    // 🛡️ الفلترة المحلية الصارمة (Sinkholing)
+                    // 🛡️ فلترة القنوات اليتيمة لمنع كراش شامل تيفي
                     if (allowedIds.includes('ALL') || allowedIds.includes(itemCatId) || extraParam !== "") {
-                        item.injected_cat_id = itemCatId; // إجبار القناة على الانضمام לلجروب الصحيح
+                        item.injected_cat_id = itemCatId; 
                         allItems.push(item);
                     }
                 }
                 foundDataInChunk = true;
             }
         }
-        
-        if (!foundDataInChunk) {
-            keepGoing = false;
-            break;
-        }
+        if (!foundDataInChunk) { keepGoing = false; break; }
         currentPage += batchSize;
     }
 
@@ -151,7 +136,7 @@ app.all(['/player_api.php', '/panel_api.php', '/xmltv.php'], async (req, res) =>
 
     if (!authData || authData.mac.toLowerCase() !== username.toLowerCase()) {
         if (apiAction === "") return res.json({ user_info: { auth: 0, status: "Inactive" } });
-        return res.json([]);
+        return res.json(safeFallback(apiAction));
     }
 
     let portalServer = authData.srv;
@@ -163,6 +148,7 @@ app.all(['/player_api.php', '/panel_api.php', '/xmltv.php'], async (req, res) =>
 
     try {
         if (apiAction === "") {
+            let timeNow = new Date().toISOString().replace('T', ' ').substring(0, 19);
             return res.json({
                 user_info: { 
                     username: username, password: password, message: "Logged In Successfully", 
@@ -170,17 +156,17 @@ app.all(['/player_api.php', '/panel_api.php', '/xmltv.php'], async (req, res) =>
                     is_trial: "0", active_cons: "0", max_connections: "1000", created_at: "1600000000",
                     allowed_output_formats: ["m3u8", "ts", "rtmp", "mkv", "mp4"] 
                 },
-                server_info: { url: fullUrl, port: "80", https_port: "443", server_protocol: "http", timezone: "Africa/Algiers", version: "2.9.0" }
+                server_info: { url: fullUrl, port: "80", https_port: "443", server_protocol: "http", timezone: "Africa/Algiers", timestamp_now: Math.floor(Date.now() / 1000), time_now: timeNow, version: "2.9.0" }
             });
         } 
         
         let handshakeRes = await callStalkerProxy(portalServer, stalkerMac, "stb", "handshake");
         let stalkerToken = handshakeRes?.js?.token;
-        if (!stalkerToken) return res.json([]); 
+        if (!stalkerToken) return res.json(safeFallback(apiAction)); 
 
         let responseData = [];
 
-        // 🎭 تزوير الجروبات المسموحة فقط
+        // 🎯 جلب الفئات بشكل متوافق تماماً
         if (apiAction === "get_live_categories") {
             let r = await callStalkerProxy(portalServer, stalkerMac, "itv", "get_genres", stalkerToken);
             let list = r?.js ? (Array.isArray(r.js) ? r.js : Object.values(r.js)) : [];
@@ -200,7 +186,7 @@ app.all(['/player_api.php', '/panel_api.php', '/xmltv.php'], async (req, res) =>
             responseData = list.map(c => ({ category_id: String(c.id), category_name: String(c.title || c.name), parent_id: 0 }));
         } 
         
-        // 🚀 تعبئة القنوات بنفس هيكلة الوركر القديم الذي نجح مع شامل تيفي
+        // 🎯 جلب القنوات بأنواع بيانات دقيقة (Strict Typing) لمنع Crash في Java
         else if (apiAction === "get_live_streams") {
             let channels = await fetchContentStrict(portalServer, stalkerMac, "itv", sel.l, categoryId, stalkerToken);
             responseData = channels.map(ch => ({
@@ -210,12 +196,12 @@ app.all(['/player_api.php', '/panel_api.php', '/xmltv.php'], async (req, res) =>
                 stream_id: parseInt(ch.id) || 0,
                 stream_icon: String(ch.logo || ""),
                 epg_channel_id: null,
-                added: "1",
-                category_id: String(ch.injected_cat_id || ch.tv_genre_id || ch.category_id || categoryId || "0"),
+                added: "1600000000",
+                category_id: String(ch.injected_cat_id || "0"),
                 custom_sid: "",
                 tv_archive: parseInt(ch.tv_archive) || 0,
                 direct_source: "",
-                tv_archive_duration: 0
+                tv_archive_duration: parseInt(ch.tv_archive_duration) || 0
             }));
         } 
         else if (apiAction === "get_vod_streams") {
@@ -226,8 +212,8 @@ app.all(['/player_api.php', '/panel_api.php', '/xmltv.php'], async (req, res) =>
                 stream_type: "movie",
                 stream_id: parseInt(v.id) || 0,
                 stream_icon: String(v.screenshot_uri || v.logo || ""),
-                added: "1",
-                category_id: String(v.injected_cat_id || v.category_id || categoryId || "0"),
+                added: "1600000000",
+                category_id: String(v.injected_cat_id || "0"),
                 container_extension: "mkv",
                 rating: String(v.rating || "5"),
                 rating_5based: 5.0,
@@ -242,10 +228,13 @@ app.all(['/player_api.php', '/panel_api.php', '/xmltv.php'], async (req, res) =>
                 name: String(s.name),
                 series_id: parseInt(s.id) || 0,
                 cover: String(s.screenshot_uri || s.logo || ""),
-                category_id: String(s.injected_cat_id || s.category_id || categoryId || "0"),
+                category_id: String(s.injected_cat_id || "0"),
                 plot: "", cast: "", director: "", genre: "", releaseDate: "",
+                last_modified: "1600000000",
                 rating: "5", rating_5based: 5.0,
-                backdrop_path: []
+                backdrop_path: [],
+                youtube_trailer: "",
+                episode_run_time: "0"
             }));
         }
         else if (apiAction === "get_series_info" && seriesId) {
@@ -266,12 +255,13 @@ app.all(['/player_api.php', '/panel_api.php', '/xmltv.php'], async (req, res) =>
                         for (let ep of episodesArr) {
                             let episodeNum = String(ep);
                             let streamIdRaw = encodeSafeBase64(`${seasonCmd}::::${episodeNum}`);
-                            
                             epsObj[sNum].push({ 
                                 id: streamIdRaw, 
-                                episode_num: episodeNum, title: `Episode ${episodeNum}`, container_extension: "mkv", 
+                                episode_num: parseInt(episodeNum) || 0, 
+                                title: `Episode ${episodeNum}`, 
+                                container_extension: "mkv", 
                                 info: { movie_image: String(season.screenshot_uri || season.cover || ""), plot: "", releasedate: "", rating: "5", rating_5based: 5.0, duration_secs: 0, duration: "" }, 
-                                custom_sid: "", added: "1", season: parseInt(sNum), direct_source: ""
+                                custom_sid: "", added: "1600000000", season: parseInt(sNum), direct_source: ""
                             });
                         }
                         seasonsInfo.push({ air_date: "", episode_count: episodesArr.length, id: parseInt(sNum), name: `Season ${sNum}`, overview: "", season_number: parseInt(sNum), cover: "", cover_big: "" });
@@ -279,7 +269,7 @@ app.all(['/player_api.php', '/panel_api.php', '/xmltv.php'], async (req, res) =>
                     }
                 }
                 if (seasonsInfo.length === 0) { seasonsInfo.push({ air_date: "", episode_count: 0, id: 1, name: "Season 1", overview: "", season_number: 1, cover: "", cover_big: "" }); epsObj["1"] = []; }
-                responseData = { seasons: seasonsInfo, episodes: epsObj, info: { name: "GAMERDZ Series", cover: "", plot: "", cast: "", director: "", genre: "", releaseDate: "", rating: "5", rating_5based: 5.0 } };
+                responseData = { seasons: seasonsInfo, episodes: epsObj, info: { name: "GAMERDZ Series", cover: "", plot: "", cast: "", director: "", genre: "", releaseDate: "", rating: "5", rating_5based: 5.0, backdrop_path: [] } };
             } catch(e) { responseData = safeFallback("get_series_info"); }
         }
         else if (apiAction === "get_short_epg" || apiAction === "get_simple_data_table") {
@@ -318,11 +308,19 @@ app.get(['/live/:user/:pass/:stream', '/movie/:user/:pass/:stream', '/series/:us
         const stalkerToken = handshakeRes?.js?.token;
         if (!stalkerToken) return res.status(403).send("MAC Blocked");
         
-        let linkRes = await callStalkerProxy(server, stalkerMac, "itv", `create_link&cmd=${encodeURIComponent(`ffmpeg localhost/ch/${streamId}`)}`, stalkerToken);
+        let cmd = encodeURIComponent(`ffmpeg localhost/ch/${streamId}`);
+        let linkRes = await callStalkerProxy(server, stalkerMac, "itv", `create_link&cmd=${cmd}`, stalkerToken);
         let streamUrl = linkRes?.js?.cmd;
-        if (!streamUrl) { linkRes = await callStalkerProxy(server, stalkerMac, "itv", `create_link&cmd=${streamId}`, stalkerToken); streamUrl = linkRes?.js?.cmd; }
         
-        if (streamUrl) { let finalUrl = streamUrl.startsWith('ffmpeg ') ? streamUrl.split(' ').pop() : streamUrl; return res.redirect(finalUrl); }
+        if (!streamUrl) { 
+            linkRes = await callStalkerProxy(server, stalkerMac, "itv", `create_link&cmd=${streamId}`, stalkerToken); 
+            streamUrl = linkRes?.js?.cmd; 
+        }
+        
+        if (streamUrl) { 
+            let finalUrl = streamUrl.startsWith('ffmpeg ') ? streamUrl.split(' ').pop() : streamUrl; 
+            return res.redirect(finalUrl); 
+        }
         return res.status(404).send("Stream Not Found");
     } catch(e) { return res.status(500).send("Bridge Error"); }
 });
