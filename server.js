@@ -1,6 +1,7 @@
 const express = require('express');
 const cors = require('cors');
 const fetch = require('node-fetch');
+const { Readable } = require('stream'); // 🌟 إضافة ضرورية لدعم البث في الإصدارات الحديثة
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -19,7 +20,7 @@ app.use(cors({ origin: '*' }));
 app.use(express.json({ limit: '5mb' }));
 app.use(express.urlencoded({ limit: '5mb', extended: true }));
 
-// 🛡️ نظام الكاش الذكي لتقليل الطلبات وحماية السيرفر (تمت إضافته لكودك الأصلي)
+// 🛡️ نظام الكاش الذكي لتقليل الطلبات وحماية السيرفر
 const listsCache = new Map();
 app.use((req, res, next) => {
     if (req.path.includes('player_api') || req.path.includes('get_items') || req.path.includes('scan') || req.path.includes('get.php')) {
@@ -251,7 +252,7 @@ app.post('/api/get_items', async (req, res) => {
     } catch(e) { res.json({success: false, error: e.message}); }
 });
 
-// 🚀 مسار المعاينة الذكي الذي يحاكي مسارات التحويل بالضبط (Bypass CORS) - الكود الأصلي الذي يعمل
+// 🚀 مسار المعاينة الذكي الذي يحاكي مسارات التحويل بالضبط (Bypass CORS)
 app.get('/proxy_stream', async (req, res) => {
     let { server, mac, stream_id, type, use_worker } = req.query;
     try {
@@ -273,13 +274,11 @@ app.get('/proxy_stream', async (req, res) => {
 
         if(!streamUrl) return res.status(404).send("Stream not found");
 
-        // 🌟 الميزة الاختيارية للـ Worker (مغلقة افتراضياً ليعمل المشغل القديم)
         if (use_worker === '1') {
             let workerProxyUrl = `${CLOUDFLARE_WORKER_URL}/?url=${encodeURIComponent(streamUrl)}`;
             return res.redirect(workerProxyUrl);
         }
 
-        // الكود الأصلي الذي يعمل لديك باستخدام Pipe
         const reqHeaders = { 
             "User-Agent": "VLC/3.0.9 LibVLC/3.0.9", 
             "Accept": "*/*",
@@ -312,12 +311,19 @@ app.get('/proxy_stream', async (req, res) => {
             res.setHeader('Content-Type', (type === 'vod' || type === 'movie') ? 'video/mp4' : 'video/mp2t');
         }
 
-        fetchRes.body.pipe(res);
-
-        fetchRes.body.on('error', (err) => { res.end(); });
-        req.on('close', () => { 
-            if (fetchRes.body && typeof fetchRes.body.destroy === 'function') fetchRes.body.destroy(); 
-        });
+        // 🌟 التوافق الشامل للبث مع بيئات Node.js الحديثة
+        if (typeof fetchRes.body.pipe === 'function') {
+            fetchRes.body.pipe(res);
+            fetchRes.body.on('error', (err) => { res.end(); });
+            req.on('close', () => { 
+                if (fetchRes.body && typeof fetchRes.body.destroy === 'function') fetchRes.body.destroy(); 
+            });
+        } else {
+            const webStream = Readable.fromWeb(fetchRes.body);
+            webStream.pipe(res);
+            webStream.on('error', () => res.end());
+            req.on('close', () => webStream.destroy());
+        }
 
     } catch(e) { res.status(500).send("Proxy Error"); }
 });
@@ -379,7 +385,7 @@ app.get('/get.php', async (req, res) => {
     } catch(e) { return res.status(500).send("Error generating M3U"); }
 });
 
-// 🚀 مسارات Xtream (مع تفعيل الكاش الداخلي 🛡️)
+// 🚀 مسارات Xtream 
 app.all(['/player_api.php', '/panel_api.php', '/xmltv.php'], async (req, res) => {
     let username = (req.query.username || req.body.username || "").trim();
     let password = (req.query.password || req.body.password || "").trim();
@@ -389,7 +395,6 @@ app.all(['/player_api.php', '/panel_api.php', '/xmltv.php'], async (req, res) =>
 
     if (req.path.endsWith("xmltv.php")) return res.type('text/xml').send('<?xml version="1.0" encoding="UTF-8"?><tv></tv>');
 
-    // 🛡️ فحص الكاش الداخلي
     let cacheKey = `xtream_${username}_${apiAction}_${categoryId || 'all'}_${seriesId || 'all'}`;
     if (listsCache.has(cacheKey)) {
         let cached = listsCache.get(cacheKey);
@@ -515,7 +520,6 @@ app.all(['/player_api.php', '/panel_api.php', '/xmltv.php'], async (req, res) =>
             responseData = { epg_listings: [] };
         }
 
-        // 🛡️ حفظ النتيجة في الكاش
         if (apiAction !== "") {
             listsCache.set(cacheKey, { data: responseData, time: Date.now() });
         }
@@ -524,7 +528,7 @@ app.all(['/player_api.php', '/panel_api.php', '/xmltv.php'], async (req, res) =>
     } catch (e) { return res.json(safeFallback(apiAction)); }
 });
 
-// 🚀 مسار سحب الفيديو لتطبيقات Xtream و المضاف له ترويسات CORS الكاملة - الكود الأصلي الذي يعمل
+// 🚀 مسار سحب الفيديو لتطبيقات Xtream 
 app.get(['/live/:user/:pass/:stream', '/movie/:user/:pass/:stream', '/series/:user/:pass/:stream', '/:user/:pass/:stream'], async (req, res) => {
     const type = req.path.split('/')[1] || "live";
     const username = decodeURIComponent(req.params.user).trim();
@@ -576,13 +580,11 @@ app.get(['/live/:user/:pass/:stream', '/movie/:user/:pass/:stream', '/series/:us
 
         if (!finalStreamUrl) return res.status(404).send("Stream Not Found");
 
-        // 🌟 الميزة الاختيارية للـ Worker
         if (use_worker === '1') {
             let workerProxyUrl = `${CLOUDFLARE_WORKER_URL}/?url=${encodeURIComponent(finalStreamUrl)}`;
             return res.redirect(workerProxyUrl);
         }
 
-        // الكود الأصلي الذي يعمل لديك باستخدام Pipe
         const reqHeaders = { 
             "User-Agent": "VLC/3.0.9 LibVLC/3.0.9", 
             "Accept": "*/*",
@@ -615,12 +617,19 @@ app.get(['/live/:user/:pass/:stream', '/movie/:user/:pass/:stream', '/series/:us
             res.setHeader('Content-Type', (type === "live" ? 'video/mp2t' : 'video/mp4'));
         }
         
-        fetchRes.body.pipe(res);
-
-        fetchRes.body.on('error', (err) => res.end());
-        req.on('close', () => {
-            if (fetchRes.body && typeof fetchRes.body.destroy === 'function') fetchRes.body.destroy();
-        });
+        // 🌟 التوافق الشامل للبث مع بيئات Node.js الحديثة
+        if (typeof fetchRes.body.pipe === 'function') {
+            fetchRes.body.pipe(res);
+            fetchRes.body.on('error', (err) => res.end());
+            req.on('close', () => {
+                if (fetchRes.body && typeof fetchRes.body.destroy === 'function') fetchRes.body.destroy();
+            });
+        } else {
+            const webStream = Readable.fromWeb(fetchRes.body);
+            webStream.pipe(res);
+            webStream.on('error', () => res.end());
+            req.on('close', () => webStream.destroy());
+        }
 
     } catch(e) { 
         return res.status(500).send("Bridge Error"); 
