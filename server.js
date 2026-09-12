@@ -15,7 +15,6 @@ process.on('uncaughtException', function (err) { console.error('Caught exception
 process.on('unhandledRejection', (reason, p) => { console.error('Unhandled Rejection: ', reason); });
 
 app.use(cors({ origin: '*' }));
-// 🌟 خفضنا الـ limit لتقليل استهلاك الرام عند رفع الطلبات (كما كان في كودك القديم الناجح)
 app.use(express.json({ limit: '2mb' }));
 app.use(express.urlencoded({ limit: '2mb', extended: true }));
 
@@ -28,6 +27,53 @@ app.use((req, res, next) => {
 });
 
 const localCache = new Map();
+
+// 🌟 دالة التفريغ المستمر الموحدة للذاكرة (تعمل على Render و Google Cloud بكفاءة)
+function streamToResponse(fetchBody, res, req) {
+    if (fetchBody.on && typeof fetchBody.on === 'function') {
+        fetchBody.on('data', (chunk) => {
+            if (!res.writableEnded) res.write(chunk);
+        });
+        fetchBody.on('end', () => {
+            if (!res.writableEnded) res.end();
+        });
+        fetchBody.on('error', () => {
+            if (!res.writableEnded) res.end();
+        });
+        req.on('close', () => {
+            if (!res.writableEnded) res.end();
+            if (typeof fetchBody.destroy === 'function') fetchBody.destroy();
+        });
+    } else if (fetchBody.getReader) {
+        const reader = fetchBody.getReader();
+        req.on('close', () => {
+            reader.cancel();
+            if (!res.writableEnded) res.end();
+        });
+        async function pump() {
+            try {
+                while (true) {
+                    const { done, value } = await reader.read();
+                    if (done) {
+                        if (!res.writableEnded) res.end();
+                        break;
+                    }
+                    if (!res.writableEnded) {
+                        res.write(value);
+                    } else {
+                        reader.cancel();
+                        break;
+                    }
+                }
+            } catch (err) {
+                if (!res.writableEnded) res.end();
+            }
+        }
+        pump();
+    } else {
+        if (!res.writableEnded) res.end();
+    }
+}
 
 async function getAuthDataFromFirebase(password) {
     if (!password) return null;
@@ -88,14 +134,20 @@ function safeFallback(action) {
     } else return [];
 }
 
+// 🌟 حقن الـ IP الوهمي ضمن اتصالات الـ API الأساسية لفك حظر استخراج القنوات
 async function callStalkerDirect(serverUrl, macAddress, stalkerType, stalkerAction, token = null) {
     let targetUrl = "";
+    const randomIP = `197.${Math.floor(Math.random() * 255)}.${Math.floor(Math.random() * 255)}.${Math.floor(Math.random() * 255)}`;
+    
     let headers = {
         "User-Agent": "Mozilla/5.0 (QtEmbedded; U; Linux; C) AppleWebKit/533.3 (KHTML, like Gecko) MAG200 stbapp ver: 2 rev: 250 Safari/533.3",
         "Referer": `${serverUrl}/c/`,
         "Cookie": `mac=${macAddress}; stb_lang=en; timezone=Africa/Algiers;`,
         "Accept": "application/json, text/javascript, */*; q=0.01",
-        "X-Requested-With": "XMLHttpRequest"
+        "X-Requested-With": "XMLHttpRequest",
+        "X-Forwarded-For": randomIP,
+        "X-Real-IP": randomIP,
+        "Client-IP": randomIP
     };
 
     if (stalkerAction === "handshake") {
@@ -250,7 +302,7 @@ app.post('/api/get_items', async (req, res) => {
     } catch(e) { res.json({success: false, error: e.message}); }
 });
 
-// 🚀 مسار المعاينة الذكي الذي يحاكي مسارات التحويل بالضبط (Bypass CORS)
+// 🚀 مسار المعاينة الذكي مع نظام التخفي
 app.get('/proxy_stream', async (req, res) => {
     let { server, mac, stream_id, type } = req.query;
     try {
@@ -259,7 +311,6 @@ app.get('/proxy_stream', async (req, res) => {
         if(!tk) return res.status(403).send("Blocked");
 
         let streamUrl = "";
-        
         if (type === 'vod' || type === 'movie') {
             streamUrl = `${server}/play/movie.php?mac=${mac}&stream=${stream_id}.mkv&type=movie`;
         } else {
@@ -297,7 +348,6 @@ app.get('/proxy_stream', async (req, res) => {
 
         res.status(fetchRes.status); 
         
-        // 🌟 السحر هنا: ترويسات تخطي حماية CORS الكاملة للمشغل
         res.setHeader('Access-Control-Allow-Origin', '*');
         res.setHeader('Access-Control-Allow-Methods', 'GET, HEAD, OPTIONS');
         res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Range, Accept-Ranges');
@@ -312,26 +362,8 @@ app.get('/proxy_stream', async (req, res) => {
             res.setHeader('Content-Type', (type === 'vod' || type === 'movie') ? 'video/mp4' : 'video/mp2t');
         }
 
-        // 🌟 تفريغ الذاكرة (Memory Offloading) بدلاً من البايب التقليدي
-        // هذه الطريقة تمرر البيانات كقطرات مباشرة إلى المتصفح دون تخزينها في RAM
-        fetchRes.body.on('data', (chunk) => {
-            if (!res.writableEnded) {
-                res.write(chunk);
-            }
-        });
-
-        fetchRes.body.on('end', () => {
-            if (!res.writableEnded) res.end();
-        });
-
-        fetchRes.body.on('error', (err) => {
-            if (!res.writableEnded) res.end();
-        });
-
-        req.on('close', () => { 
-            if (!res.writableEnded) res.end();
-            if (fetchRes.body && typeof fetchRes.body.destroy === 'function') fetchRes.body.destroy(); 
-        });
+        // 🌟 استدعاء دالة التفريغ المستمر الجديدة
+        streamToResponse(fetchRes.body, res, req);
 
     } catch(e) { res.status(500).send("Proxy Error"); }
 });
@@ -393,7 +425,6 @@ app.get('/get.php', async (req, res) => {
     } catch(e) { return res.status(500).send("Error generating M3U"); }
 });
 
-// 🚀 مسارات Xtream (مع تفعيل الكاش الداخلي 🛡️ لتوفير الموارد)
 app.all(['/player_api.php', '/panel_api.php', '/xmltv.php'], async (req, res) => {
     let username = (req.query.username || req.body.username || "").trim();
     let password = (req.query.password || req.body.password || "").trim();
@@ -403,11 +434,9 @@ app.all(['/player_api.php', '/panel_api.php', '/xmltv.php'], async (req, res) =>
 
     if (req.path.endsWith("xmltv.php")) return res.type('text/xml').send('<?xml version="1.0" encoding="UTF-8"?><tv></tv>');
 
-    // 🛡️ فحص الكاش الداخلي: نُرسل الرد المحفوظ مباشرة بدلاً من إعادة معالجته
     let cacheKey = `xtream_${username}_${apiAction}_${categoryId || 'all'}_${seriesId || 'all'}`;
     if (listsCache.has(cacheKey)) {
         let cached = listsCache.get(cacheKey);
-        // التخزين صالح لمدة 4 ساعات
         if (Date.now() - cached.time < 14400000) { 
             res.setHeader('Content-Type', 'application/json');
             return res.send(cached.data);
@@ -531,7 +560,6 @@ app.all(['/player_api.php', '/panel_api.php', '/xmltv.php'], async (req, res) =>
             responseData = { epg_listings: [] };
         }
 
-        // 🛡️ حفظ النتيجة في الكاش الداخلي بصيغة نصية (String) لتجنب أخطاء التحويل لاحقاً
         if (apiAction !== "") {
             const stringData = JSON.stringify(responseData);
             listsCache.set(cacheKey, { data: stringData, time: Date.now() });
@@ -543,7 +571,7 @@ app.all(['/player_api.php', '/panel_api.php', '/xmltv.php'], async (req, res) =>
     } catch (e) { return res.json(safeFallback(apiAction)); }
 });
 
-// 🚀 مسار سحب الفيديو لتطبيقات Xtream و المضاف له ترويسات CORS الكاملة
+// 🚀 مسار سحب الفيديو 
 app.get(['/live/:user/:pass/:stream', '/movie/:user/:pass/:stream', '/series/:user/:pass/:stream', '/:user/:pass/:stream'], async (req, res) => {
     const type = req.path.split('/')[1] || "live";
     const username = decodeURIComponent(req.params.user).trim();
@@ -594,7 +622,6 @@ app.get(['/live/:user/:pass/:stream', '/movie/:user/:pass/:stream', '/series/:us
 
         if (!finalStreamUrl) return res.status(404).send("Stream Not Found");
 
-        // 🛡️ ترويسات VLC لتخطي حظر 403 Forbidden و 511
         const randomIP = `197.${Math.floor(Math.random() * 255)}.${Math.floor(Math.random() * 255)}.${Math.floor(Math.random() * 255)}`; 
         
         const reqHeaders = { 
@@ -634,25 +661,8 @@ app.get(['/live/:user/:pass/:stream', '/movie/:user/:pass/:stream', '/series/:us
             res.setHeader('Content-Type', (type === "live" ? 'video/mp2t' : 'video/mp4'));
         }
         
-        // 🌟 تفريغ الذاكرة المستمر (Memory Offloading)
-        fetchRes.body.on('data', (chunk) => {
-            if (!res.writableEnded) {
-                res.write(chunk);
-            }
-        });
-
-        fetchRes.body.on('end', () => {
-            if (!res.writableEnded) res.end();
-        });
-
-        fetchRes.body.on('error', (err) => {
-            if (!res.writableEnded) res.end();
-        });
-
-        req.on('close', () => { 
-            if (!res.writableEnded) res.end();
-            if (fetchRes.body && typeof fetchRes.body.destroy === 'function') fetchRes.body.destroy(); 
-        });
+        // 🌟 استدعاء دالة التفريغ المستمر الجديدة
+        streamToResponse(fetchRes.body, res, req);
 
     } catch(e) { 
         return res.status(500).send("Bridge Error"); 
