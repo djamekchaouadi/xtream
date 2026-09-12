@@ -669,4 +669,12 @@ app.get(['/live/:user/:pass/:stream', '/movie/:user/:pass/:stream', '/series/:us
     }
 });
 
-app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
+// 🌟 مسار رئيسي لتجاوز فحص الصحة (Health Check) الخاص بجوجل كلاود
+app.get('/', (req, res) => {
+    res.status(200).send('✅ GAMERDZ1517 SERVER IS RUNNING PERFECTLY!');
+});
+
+// 🌟 إجبار السيرفر على قبول الاتصالات الخارجية من شبكة جوجل (مهم جداً)
+app.listen(PORT, '0.0.0.0', () => {
+    console.log(`Server running on port ${PORT}`);
+});
