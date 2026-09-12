@@ -279,10 +279,17 @@ app.get('/proxy_stream', async (req, res) => {
             return res.redirect(workerProxyUrl);
         }
 
+   // 🛡️ ترويسات قوية لمحاكاة جهاز الاستقبال وإخفاء هوية السيرفر
+        const randomIP = `${Math.floor(Math.random() * 255)}.${Math.floor(Math.random() * 255)}.${Math.floor(Math.random() * 255)}.${Math.floor(Math.random() * 255)}`;
+        
         const reqHeaders = { 
-            "User-Agent": "VLC/3.0.9 LibVLC/3.0.9", 
+            "User-Agent": "Mozilla/5.0 (QtEmbedded; U; Linux; C) AppleWebKit/533.3 (KHTML, like Gecko) MAG200 stbapp ver: 2 rev: 250 Safari/533.3", 
+            "Cookie": `mac=${mac}; stb_lang=en; timezone=Africa/Algiers;`,
             "Accept": "*/*",
-            "Connection": "keep-alive"
+            "Connection": "keep-alive",
+            "X-Forwarded-For": randomIP,     // خداع السيرفر بـ IP عشوائي
+            "X-Real-IP": randomIP,           // محاكاة اتصال منزلي
+            "Referer": `${server}/c/`
         };
         
         if (req.headers.range) reqHeaders["Range"] = req.headers.range;
