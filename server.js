@@ -1,18 +1,17 @@
+// 🛡️ تخطي أخطاء شهادات الأمان (SSL) لسيرفرات الـ IPTV
+process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0';
+
 const express = require('express');
 const cors = require('cors');
 const fetch = require('node-fetch');
-const { Readable } = require('stream'); // 🌟 إضافة ضرورية لدعم البث في الإصدارات الحديثة
+const { Readable } = require('stream');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// ⚠️ رابط قاعدة بيانات Firebase الخاص بك
 const FIREBASE_URL = "https://gamerdz1517-db-default-rtdb.europe-west1.firebasedatabase.app"; 
-
-// ⚠️ رابط Cloudflare Worker الخاص بك (احتياطي فقط)
 const CLOUDFLARE_WORKER_URL = "https://xt.gamerdz1517.com";
 
-// 🛡️ حماية السيرفر من الانهيار
 process.on('uncaughtException', function (err) { console.error('Caught exception: ', err); });
 process.on('unhandledRejection', (reason, p) => { console.error('Unhandled Rejection: ', reason); });
 
@@ -20,7 +19,6 @@ app.use(cors({ origin: '*' }));
 app.use(express.json({ limit: '5mb' }));
 app.use(express.urlencoded({ limit: '5mb', extended: true }));
 
-// 🛡️ نظام الكاش الذكي لتقليل الطلبات وحماية السيرفر
 const listsCache = new Map();
 app.use((req, res, next) => {
     if (req.path.includes('player_api') || req.path.includes('get_items') || req.path.includes('scan') || req.path.includes('get.php')) {
@@ -252,9 +250,9 @@ app.post('/api/get_items', async (req, res) => {
     } catch(e) { res.json({success: false, error: e.message}); }
 });
 
-// 🚀 مسار المعاينة الذكي الذي يحاكي مسارات التحويل بالضبط (Bypass CORS)
+// 🚀 مسار المعاينة الذكي (تمت برمجة التخفي كـ VLC لكسر حماية السيرفرات)
 app.get('/proxy_stream', async (req, res) => {
-    let { server, mac, stream_id, type, use_worker } = req.query;
+    let { server, mac, stream_id, type } = req.query;
     try {
         let tkRes = await callStalkerDirect(server, mac, "stb", "handshake", null);
         let tk = tkRes?.js?.token;
@@ -274,22 +272,16 @@ app.get('/proxy_stream', async (req, res) => {
 
         if(!streamUrl) return res.status(404).send("Stream not found");
 
-        if (use_worker === '1') {
-            let workerProxyUrl = `${CLOUDFLARE_WORKER_URL}/?url=${encodeURIComponent(streamUrl)}`;
-            return res.redirect(workerProxyUrl);
-        }
-
-   // 🛡️ ترويسات قوية لمحاكاة جهاز الاستقبال وإخفاء هوية السيرفر
-        const randomIP = `${Math.floor(Math.random() * 255)}.${Math.floor(Math.random() * 255)}.${Math.floor(Math.random() * 255)}.${Math.floor(Math.random() * 255)}`;
+        // 🛡️ ترويسات VLC لتخطي حظر 403 Forbidden و 511
+        const randomIP = `197.${Math.floor(Math.random() * 255)}.${Math.floor(Math.random() * 255)}.${Math.floor(Math.random() * 255)}`; // IP منزلي جزائري للتمويه
         
         const reqHeaders = { 
-            "User-Agent": "Mozilla/5.0 (QtEmbedded; U; Linux; C) AppleWebKit/533.3 (KHTML, like Gecko) MAG200 stbapp ver: 2 rev: 250 Safari/533.3", 
-            "Cookie": `mac=${mac}; stb_lang=en; timezone=Africa/Algiers;`,
+            "User-Agent": "VLC/3.0.9 LibVLC/3.0.9", // هنا يكمن السر، السيرفر سيظن أنك تستخدم تطبيق VLC العادي
             "Accept": "*/*",
             "Connection": "keep-alive",
-            "X-Forwarded-For": randomIP,     // خداع السيرفر بـ IP عشوائي
-            "X-Real-IP": randomIP,           // محاكاة اتصال منزلي
-            "Referer": `${server}/c/`
+            "X-Forwarded-For": randomIP,
+            "X-Real-IP": randomIP,
+            "Client-IP": randomIP
         };
         
         if (req.headers.range) reqHeaders["Range"] = req.headers.range;
@@ -318,7 +310,6 @@ app.get('/proxy_stream', async (req, res) => {
             res.setHeader('Content-Type', (type === 'vod' || type === 'movie') ? 'video/mp4' : 'video/mp2t');
         }
 
-        // 🌟 التوافق الشامل للبث مع بيئات Node.js الحديثة
         if (typeof fetchRes.body.pipe === 'function') {
             fetchRes.body.pipe(res);
             fetchRes.body.on('error', (err) => { res.end(); });
@@ -392,7 +383,6 @@ app.get('/get.php', async (req, res) => {
     } catch(e) { return res.status(500).send("Error generating M3U"); }
 });
 
-// 🚀 مسارات Xtream 
 app.all(['/player_api.php', '/panel_api.php', '/xmltv.php'], async (req, res) => {
     let username = (req.query.username || req.body.username || "").trim();
     let password = (req.query.password || req.body.password || "").trim();
@@ -535,13 +525,12 @@ app.all(['/player_api.php', '/panel_api.php', '/xmltv.php'], async (req, res) =>
     } catch (e) { return res.json(safeFallback(apiAction)); }
 });
 
-// 🚀 مسار سحب الفيديو لتطبيقات Xtream 
+// 🚀 مسار سحب الفيديو (تمت برمجة التخفي كـ VLC لكسر حماية السيرفرات)
 app.get(['/live/:user/:pass/:stream', '/movie/:user/:pass/:stream', '/series/:user/:pass/:stream', '/:user/:pass/:stream'], async (req, res) => {
     const type = req.path.split('/')[1] || "live";
     const username = decodeURIComponent(req.params.user).trim();
     const reqPass = decodeURIComponent(req.params.pass).trim();
     let streamId = req.params.stream; if (streamId.includes('.')) streamId = streamId.split('.')[0];
-    let use_worker = req.query.use_worker;
 
     let authData = await getAuthDataFromFirebase(reqPass);
     if (!authData || authData.mac.toLowerCase() !== username.toLowerCase()) return res.status(403).send("Unauthorized");
@@ -587,15 +576,16 @@ app.get(['/live/:user/:pass/:stream', '/movie/:user/:pass/:stream', '/series/:us
 
         if (!finalStreamUrl) return res.status(404).send("Stream Not Found");
 
-        if (use_worker === '1') {
-            let workerProxyUrl = `${CLOUDFLARE_WORKER_URL}/?url=${encodeURIComponent(finalStreamUrl)}`;
-            return res.redirect(workerProxyUrl);
-        }
-
+        // 🛡️ ترويسات VLC لتخطي حظر 403 Forbidden و 511
+        const randomIP = `197.${Math.floor(Math.random() * 255)}.${Math.floor(Math.random() * 255)}.${Math.floor(Math.random() * 255)}`; // IP منزلي جزائري للتمويه
+        
         const reqHeaders = { 
-            "User-Agent": "VLC/3.0.9 LibVLC/3.0.9", 
+            "User-Agent": "VLC/3.0.9 LibVLC/3.0.9", // التخفي كبرنامج VLC
             "Accept": "*/*",
-            "Connection": "keep-alive"
+            "Connection": "keep-alive",
+            "X-Forwarded-For": randomIP,
+            "X-Real-IP": randomIP,
+            "Client-IP": randomIP
         };
         
         if (req.headers.range) reqHeaders["Range"] = req.headers.range;
@@ -624,7 +614,6 @@ app.get(['/live/:user/:pass/:stream', '/movie/:user/:pass/:stream', '/series/:us
             res.setHeader('Content-Type', (type === "live" ? 'video/mp2t' : 'video/mp4'));
         }
         
-        // 🌟 التوافق الشامل للبث مع بيئات Node.js الحديثة
         if (typeof fetchRes.body.pipe === 'function') {
             fetchRes.body.pipe(res);
             fetchRes.body.on('error', (err) => res.end());
