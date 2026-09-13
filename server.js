@@ -262,7 +262,29 @@ app.post('/create_account', async (req, res) => {
         else return res.json({success: false, error: "Database Error"});
     } catch(e) { res.json({success: false, error: e.message}); }
 });
+// ================================================================
+// Stalker Handshake Endpoint (للويب - يحل CORS)
+// ================================================================
+app.get('/stalker/handshake', async (req, res) => {
+    const { portal, mac } = req.query;
 
+    if (!portal || !mac) {
+        return res.status(400).json({ success: false, error: "Missing portal or mac" });
+    }
+
+    try {
+        const result = await callStalkerDirect(portal, mac, "stb", "handshake", null);
+        const token = result?.js?.token;
+
+        if (!token) {
+            return res.status(401).json({ success: false, error: "Invalid MAC or Portal" });
+        }
+
+        return res.json({ success: true, token: token });
+    } catch (e) {
+        return res.status(500).json({ success: false, error: e.message });
+    }
+});
 // ================================================================
 // استبدل المسار /proxy_stream الموجود في server.js بهذا الكود
 // الحل: إذا رجع 511 (IP محظور) نحول البث لـ Cloudflare Worker
