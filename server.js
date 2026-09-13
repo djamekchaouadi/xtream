@@ -412,23 +412,37 @@ app.get('/proxy_stream', async (req, res) => {
 
         if (type === 'vod' || type === 'movie') {
             streamUrl = `${server}/play/movie.php?mac=${mac}&stream=${stream_id}.mkv&type=movie`;
+} else {
+    // Live: create_link للحصول على الرابط الحقيقي مع play_token
+    let cmd = encodeURIComponent(`ffmpeg localhost/ch/${stream_id}`);
+    let linkRes = await callStalkerDirect(server, mac, "itv", `create_link&cmd=${cmd}`, tk);
+
+    console.log(`[PROXY_STREAM] linkRes=${JSON.stringify(linkRes?.js)}`);
+
+    if (linkRes?.js?.cmd) {
+        let rawCmd = linkRes.js.cmd;
+        
+        // استخراج الرابط الحقيقي من ffmpeg
+        if (rawCmd.startsWith('ffmpeg ')) {
+            streamUrl = rawCmd.split(' ').pop();
         } else {
-            // Live: create_link أولاً
-            let cmd = encodeURIComponent(`ffmpeg localhost/ch/${stream_id}`);
-            let linkRes = await callStalkerDirect(server, mac, "itv", `create_link&cmd=${cmd}`, tk);
+            streamUrl = rawCmd;
+        }
 
-            console.log(`[PROXY_STREAM] linkRes=${JSON.stringify(linkRes?.js)}`);
+        // إضافة play_token إذا موجود في الرد
+        let playToken = linkRes.js.play_token || linkRes.js.token_random || null;
+        if (playToken && !streamUrl.includes('play_token=')) {
+            streamUrl += (streamUrl.includes('?') ? '&' : '?') + `play_token=${playToken}`;
+        }
 
-            if (linkRes?.js?.cmd) {
-                let rawCmd = linkRes.js.cmd;
-                if (rawCmd.startsWith('ffmpeg ')) {
-                    streamUrl = rawCmd.split(' ').pop();
-                } else if (!rawCmd.includes('.m3u8')) {
-                    streamUrl = rawCmd;
-                } else {
-                    streamUrl = rawCmd; // m3u8 نقبله أيضاً
-                }
-            }
+        console.log(`[PROXY_STREAM] final streamUrl with token=${streamUrl}`);
+    }
+
+    // fallback إذا create_link فشل
+    if (!streamUrl) {
+        streamUrl = `${server}/play/live.php?mac=${mac}&stream=${stream_id}&extension=ts`;
+    }
+}
 
             // fallback إذا create_link فشل
             if (!streamUrl) {
