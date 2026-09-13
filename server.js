@@ -264,14 +264,18 @@ app.post('/create_account', async (req, res) => {
 });
 
 // ================================================================
-// 🔧 PATCH للسيرفر Node.js الخاص بك (server.js / index.js)
-// استبدل فقط المسار الموجود /proxy_stream بهذا الكود الكامل
+// استبدل المسار /proxy_stream الموجود في server.js بهذا الكود
+// الحل: إذا رجع 511 (IP محظور) نحول البث لـ Cloudflare Worker
 // ================================================================
 
-// 🚀 مسار المعاينة الذكي مع نظام التخفي + دعم Worker
+const CLOUDFLARE_WORKER_URL = "https://xt.gamerdz1517.com"; // Worker URL الخاص بك
+
 app.get('/proxy_stream', async (req, res) => {
     let { server, mac, stream_id, type, resolve_only } = req.query;
-    
+
+    // تنظيف الـ server URL
+    if (server) server = server.replace(/\/c\/?$/i, '').replace(/\/+$/, '');
+
     try {
         let tkRes = await callStalkerDirect(server, mac, "stb", "handshake", null);
         let tk = tkRes?.js?.token;
@@ -282,7 +286,6 @@ app.get('/proxy_stream', async (req, res) => {
         if (type === 'vod' || type === 'movie') {
             streamUrl = `${server}/play/movie.php?mac=${mac}&stream=${stream_id}.mkv&type=movie`;
         } else {
-            // البث المباشر: نحتاج create_link للحصول على الرابط الحقيقي
             streamUrl = `${server}/play/live.php?mac=${mac}&stream=${stream_id}&extension=ts`;
             let cmd = encodeURIComponent(`ffmpeg localhost/ch/${stream_id}`);
             let linkRes = await callStalkerDirect(server, mac, "itv", `create_link&cmd=${cmd}`, tk);
@@ -296,19 +299,14 @@ app.get('/proxy_stream', async (req, res) => {
         if (!streamUrl) return res.status(404).send("Stream not found");
 
         // ====================================================
-        // إذا الطلب من Cloudflare Worker (resolve_only=1)
-        // نرجع الرابط الحقيقي كـ JSON بدل البث المباشر
+        // إذا Worker طلب resolve_only=1 → نرجع الرابط كـ JSON
         // ====================================================
         if (resolve_only === '1') {
-            return res.json({
-                success: true,
-                stream_url: streamUrl,
-                type: type
-            });
+            return res.json({ success: true, stream_url: streamUrl, type: type });
         }
 
         // ====================================================
-        // البث المعتاد (من Blazor مباشرة أو أي مشغل)
+        // محاولة البث مع كشف 511 (IP محظور)
         // ====================================================
         const randomIP = `197.${Math.floor(Math.random() * 255)}.${Math.floor(Math.random() * 255)}.${Math.floor(Math.random() * 255)}`;
 
@@ -321,26 +319,36 @@ app.get('/proxy_stream', async (req, res) => {
             "Client-IP": randomIP
         };
 
-        if (req.headers.range) {
-            reqHeaders["Range"] = req.headers.range;
-        }
+        if (req.headers.range) reqHeaders["Range"] = req.headers.range;
 
         const fetchRes = await fetch(streamUrl, {
             headers: reqHeaders,
             redirect: 'follow',
-            timeout: 0
+            timeout: 15000
         });
 
+        // ====================================================
+        // 511 = IP محظور → نحول للـ Cloudflare Worker
+        // ====================================================
+        if (fetchRes.status === 511 || fetchRes.status === 403 || fetchRes.status === 407) {
+            console.log(`[PROXY] IP Banned (${fetchRes.status}) for ${streamUrl} - Routing via Cloudflare Worker`);
+            return routeViaWorker(req, res, streamUrl, type);
+        }
+
         if (!fetchRes.ok && fetchRes.status !== 206) {
+            // محاولة أخيرة عبر Worker لأي خطأ
+            if (fetchRes.status >= 400) {
+                console.log(`[PROXY] Error ${fetchRes.status} - Trying Cloudflare fallback`);
+                return routeViaWorker(req, res, streamUrl, type);
+            }
             return res.status(fetchRes.status).send("Stream Error");
         }
 
+        // ====================================================
+        // البث ناجح → نمرره مباشرة
+        // ====================================================
         res.status(fetchRes.status);
-
-        res.setHeader('Access-Control-Allow-Origin', '*');
-        res.setHeader('Access-Control-Allow-Methods', 'GET, HEAD, OPTIONS');
-        res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Range, Accept-Ranges');
-        res.setHeader('Access-Control-Expose-Headers', 'Content-Range, Accept-Ranges, Content-Length, Content-Type');
+        setCorsHeaders(res);
 
         const headersToForward = ['content-type', 'content-length', 'content-range', 'accept-ranges'];
         headersToForward.forEach(h => {
@@ -354,9 +362,69 @@ app.get('/proxy_stream', async (req, res) => {
         streamToResponse(fetchRes.body, res, req);
 
     } catch (e) {
-        res.status(500).send("Proxy Error");
+        console.log(`[PROXY] Exception: ${e.message} - Trying Cloudflare fallback`);
+        // حتى عند استثناء شبكي نحاول Worker
+        try {
+            let fallbackUrl = `${server}/play/live.php?mac=${mac}&stream=${stream_id}&extension=ts`;
+            return routeViaWorker(req, res, fallbackUrl, type);
+        } catch (e2) {
+            res.status(500).send("Proxy Error");
+        }
     }
 });
+
+// ================================================================
+// تحويل البث عبر Cloudflare Worker (يتجاوز حظر IP)
+// ================================================================
+async function routeViaWorker(req, res, streamUrl, type) {
+    try {
+        const workerUrl = `${CLOUDFLARE_WORKER_URL}/stream?url=${encodeURIComponent(streamUrl)}`;
+
+        const reqHeaders = {
+            "User-Agent": "VLC/3.0.9 LibVLC/3.0.9",
+            "Accept": "*/*"
+        };
+
+        if (req.headers.range) reqHeaders["Range"] = req.headers.range;
+
+        const workerRes = await fetch(workerUrl, {
+            headers: reqHeaders,
+            redirect: 'follow',
+            timeout: 0
+        });
+
+        if (!workerRes.ok && workerRes.status !== 206) {
+            return res.status(workerRes.status).send(`Worker Error: ${workerRes.status}`);
+        }
+
+        res.status(workerRes.status);
+        setCorsHeaders(res);
+
+        const headersToForward = ['content-type', 'content-length', 'content-range', 'accept-ranges'];
+        headersToForward.forEach(h => {
+            if (workerRes.headers.has(h)) res.setHeader(h, workerRes.headers.get(h));
+        });
+
+        if (!res.getHeader('Content-Type')) {
+            res.setHeader('Content-Type', (type === 'vod' || type === 'movie') ? 'video/mp4' : 'video/mp2t');
+        }
+
+        streamToResponse(workerRes.body, res, req);
+
+    } catch (e) {
+        res.status(500).send("Worker Fallback Error: " + e.message);
+    }
+}
+
+// ================================================================
+// هيدرات CORS مشتركة
+// ================================================================
+function setCorsHeaders(res) {
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Access-Control-Allow-Methods', 'GET, HEAD, OPTIONS');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Range, Accept-Ranges');
+    res.setHeader('Access-Control-Expose-Headers', 'Content-Range, Accept-Ranges, Content-Length, Content-Type');
+}
 app.post('/api/get_items', async (req, res) => {
     const { server, mac, type, selectedCats } = req.body;
     try {
