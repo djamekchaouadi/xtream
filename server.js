@@ -341,6 +341,9 @@ async function routeViaWorker(req, res, streamUrl, type) {
     } catch(e) { res.status(500).send("Worker Error: " + e.message); }
 }
 
+// ================================================================
+// Proxy Stream (المحصن ضد خطأ 429 والاتصالات المزدوجة)
+// ================================================================
 app.get('/proxy_stream', async (req, res) => {
     let { server, mac, stream_id, type, resolve_only } = req.query;
 
@@ -390,13 +393,17 @@ app.get('/proxy_stream', async (req, res) => {
 
         if (resolve_only === '1') return res.json({ success:true, stream_url:streamUrl, type });
 
-        // 🚀 تمت إزالة الـ IP الوهمي لتفادي حظر التوكن (403)
+        // 🚀 إعدادات الـ Headers المحصنة
         const reqHeaders = {
             "User-Agent": "VLC/3.0.9 LibVLC/3.0.9",
             "Accept": "*/*",
             "Connection": "keep-alive"
         };
-        if (req.headers.range) reqHeaders["Range"] = req.headers.range;
+
+        // 🚀 اللمسة السحرية: نمرر الـ Range فقط في الأفلام، ونمنعه في البث المباشر (LIVE) لمنع خطأ 429
+        if (req.headers.range && (type === 'vod' || type === 'movie')) {
+            reqHeaders["Range"] = req.headers.range;
+        }
 
         let fetchRes;
         try {
@@ -407,6 +414,11 @@ app.get('/proxy_stream', async (req, res) => {
         }
 
         console.log(`[PROXY] stream status=${fetchRes.status}`);
+
+        // 🚀 إذا السيرفر أعطانا 429 (Too Many Requests)، نرسلها للمتصفح فوراً دون اللجوء للووركر
+        if (fetchRes.status === 429) {
+            return res.status(429).send("Too Many Connections (429). The IPTV server allows only 1 connection.");
+        }
 
         // إذا واجهنا خطأ أو حظر نقوم بالتوجه إلى Worker كخطة بديلة
         if ([403, 407, 511].includes(fetchRes.status) || fetchRes.status >= 500) {
@@ -432,7 +444,6 @@ app.get('/proxy_stream', async (req, res) => {
         } catch { res.status(500).send("Proxy Error: " + e.message); }
     }
 });
-
 // ================================================================
 // Generate M3U
 // ================================================================
