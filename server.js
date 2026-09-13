@@ -258,7 +258,24 @@ app.get('/stalker/profile', async (req, res) => {
         });
     } catch(e) { return res.status(500).json({ success: false, error: e.message }); }
 });
+// ================================================================
+// Stalker Generic Action (جلب الفئات والبيانات)
+// ================================================================
+app.get('/stalker/action', async (req, res) => {
+    const { portal, mac, token, type, action } = req.query;
 
+    if (!portal || !mac || !token || !type || !action) {
+        return res.status(400).json({ success: false, error: "Missing params" });
+    }
+
+    try {
+        const result = await callStalkerDirect(portal, mac, type, action, token);
+        if (!result) return res.status(404).json({ success: false, error: "No data" });
+        return res.json(result); // يرجع الرد الخام { js: [...] }
+    } catch(e) {
+        return res.status(500).json({ success: false, error: e.message });
+    }
+});
 // ================================================================
 // Create Account
 // ================================================================
