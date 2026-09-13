@@ -326,55 +326,123 @@ async function routeViaWorker(req, res, streamUrl, type) {
 
 app.get('/proxy_stream', async (req, res) => {
     let { server, mac, stream_id, type, resolve_only } = req.query;
-    if (server) server = server.replace(/\/c\/?$/i, '').replace(/\/+$/, '');
+
+    // تنظيف الـ portal بشكل صحيح
+    if (server) {
+        server = server.trim();
+        // إزالة /c أو /c/ من النهاية
+        server = server.replace(/\/c\/?$/i, '').replace(/\/+$/, '');
+        // التأكد من وجود http
+        if (!server.startsWith('http')) server = 'http://' + server;
+    }
+
+    if (!server || !mac || !stream_id) {
+        return res.status(400).send("Missing params");
+    }
+
+    console.log(`[PROXY_STREAM] server=${server} mac=${mac} stream_id=${stream_id} type=${type}`);
 
     try {
+        // Handshake
         let tkRes = await callStalkerDirect(server, mac, "stb", "handshake", null);
         let tk = tkRes?.js?.token;
-        if (!tk) return res.status(403).send("Blocked");
+
+        console.log(`[PROXY_STREAM] token=${tk}`);
+
+        if (!tk) return res.status(403).send("Handshake Failed - MAC Blocked");
 
         let streamUrl = "";
+
         if (type === 'vod' || type === 'movie') {
             streamUrl = `${server}/play/movie.php?mac=${mac}&stream=${stream_id}.mkv&type=movie`;
         } else {
-            streamUrl = `${server}/play/live.php?mac=${mac}&stream=${stream_id}&extension=ts`;
+            // Live: create_link أولاً
             let cmd = encodeURIComponent(`ffmpeg localhost/ch/${stream_id}`);
             let linkRes = await callStalkerDirect(server, mac, "itv", `create_link&cmd=${cmd}`, tk);
-            if (linkRes?.js?.cmd && !linkRes.js.cmd.includes('.m3u8')) {
-                streamUrl = linkRes.js.cmd.startsWith('ffmpeg ') ? linkRes.js.cmd.split(' ').pop() : linkRes.js.cmd;
+
+            console.log(`[PROXY_STREAM] linkRes=${JSON.stringify(linkRes?.js)}`);
+
+            if (linkRes?.js?.cmd) {
+                let rawCmd = linkRes.js.cmd;
+                if (rawCmd.startsWith('ffmpeg ')) {
+                    streamUrl = rawCmd.split(' ').pop();
+                } else if (!rawCmd.includes('.m3u8')) {
+                    streamUrl = rawCmd;
+                } else {
+                    streamUrl = rawCmd; // m3u8 نقبله أيضاً
+                }
+            }
+
+            // fallback إذا create_link فشل
+            if (!streamUrl) {
+                streamUrl = `${server}/play/live.php?mac=${mac}&stream=${stream_id}&extension=ts`;
             }
         }
 
-        if (!streamUrl) return res.status(404).send("Stream not found");
-        if (resolve_only === '1') return res.json({ success: true, stream_url: streamUrl, type });
+        console.log(`[PROXY_STREAM] streamUrl=${streamUrl}`);
 
-        const randomIP = `197.${Math.floor(Math.random() * 255)}.${Math.floor(Math.random() * 255)}.${Math.floor(Math.random() * 255)}`;
+        if (!streamUrl) return res.status(404).send("Stream URL not found");
+
+        // إذا resolve_only=1 نرجع الرابط فقط (للـ Worker)
+        if (resolve_only === '1') {
+            return res.json({ success: true, stream_url: streamUrl, type });
+        }
+
+        // محاولة البث المباشر
+        const randomIP = `197.${Math.floor(Math.random()*255)}.${Math.floor(Math.random()*255)}.${Math.floor(Math.random()*255)}`;
         const reqHeaders = {
-            "User-Agent": "VLC/3.0.9 LibVLC/3.0.9", "Accept": "*/*", "Connection": "keep-alive",
-            "X-Forwarded-For": randomIP, "X-Real-IP": randomIP, "Client-IP": randomIP
+            "User-Agent": "VLC/3.0.9 LibVLC/3.0.9",
+            "Accept": "*/*",
+            "Connection": "keep-alive",
+            "X-Forwarded-For": randomIP,
+            "X-Real-IP": randomIP,
+            "Client-IP": randomIP
         };
         if (req.headers.range) reqHeaders["Range"] = req.headers.range;
 
-        const fetchRes = await fetch(streamUrl, { headers: reqHeaders, redirect: 'follow', timeout: 15000 });
-
-        if (fetchRes.status === 511 || fetchRes.status === 403 || fetchRes.status === 407 || fetchRes.status >= 400) {
+        let fetchRes;
+        try {
+            fetchRes = await fetch(streamUrl, {
+                headers: reqHeaders,
+                redirect: 'follow',
+                timeout: 15000
+            });
+        } catch(fetchErr) {
+            console.log(`[PROXY_STREAM] fetch error: ${fetchErr.message} → routing to Worker`);
             return routeViaWorker(req, res, streamUrl, type);
         }
-        if (!fetchRes.ok && fetchRes.status !== 206) return res.status(fetchRes.status).send("Stream Error");
 
+        console.log(`[PROXY_STREAM] fetch status=${fetchRes.status}`);
+
+        // إذا محظور → Worker
+        if ([403, 407, 511].includes(fetchRes.status) || fetchRes.status >= 500) {
+            console.log(`[PROXY_STREAM] Blocked (${fetchRes.status}) → Worker`);
+            return routeViaWorker(req, res, streamUrl, type);
+        }
+
+        if (!fetchRes.ok && fetchRes.status !== 206) {
+            return res.status(fetchRes.status).send(`Stream Error: ${fetchRes.status}`);
+        }
+
+        // بث ناجح
         res.status(fetchRes.status);
         setCorsHeaders(res);
-        ['content-type', 'content-length', 'content-range', 'accept-ranges'].forEach(h => {
+        ['content-type','content-length','content-range','accept-ranges'].forEach(h => {
             if (fetchRes.headers.has(h)) res.setHeader(h, fetchRes.headers.get(h));
         });
-        if (!res.getHeader('Content-Type')) res.setHeader('Content-Type', (type === 'vod' || type === 'movie') ? 'video/mp4' : 'video/mp2t');
+        if (!res.getHeader('Content-Type')) {
+            res.setHeader('Content-Type', (type === 'vod' || type === 'movie') ? 'video/mp4' : 'video/mp2t');
+        }
         streamToResponse(fetchRes.body, res, req);
 
     } catch(e) {
+        console.error(`[PROXY_STREAM] Exception: ${e.message}`);
         try {
             let fallbackUrl = `${server}/play/live.php?mac=${mac}&stream=${stream_id}&extension=ts`;
             return routeViaWorker(req, res, fallbackUrl, type);
-        } catch { res.status(500).send("Proxy Error"); }
+        } catch(e2) {
+            res.status(500).send("Proxy Error: " + e.message);
+        }
     }
 });
 
