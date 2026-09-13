@@ -301,7 +301,64 @@ app.post('/create_account', async (req, res) => {
         } else return res.json({ success: false, error: "Database Error" });
     } catch(e) { res.json({ success: false, error: e.message }); }
 });
+// ================================================================
+// جلب فئات Stalker فقط (سريع جداً)
+// ================================================================
+app.post('/api/get_categories', async (req, res) => {
+    const { server, mac, type } = req.body;
+    if (!server || !mac || !type)
+        return res.json({ success: false, error: "Missing params" });
 
+    try {
+        const hsRaw = await callStalkerDirect(server, mac, "stb", "handshake", null);
+        const tk = hsRaw?.js?.token;
+        if (!tk) return res.json({ success: false, error: "MAC Blocked" });
+
+        const action = type === "itv" ? "get_genres" : "get_categories";
+        const catRaw = await callStalkerDirect(server, mac, type, action, tk);
+        const list   = catRaw?.js
+            ? (Array.isArray(catRaw.js) ? catRaw.js : Object.values(catRaw.js))
+            : [];
+
+        return res.json({
+            success: true,
+            token:   tk,   // نرجع الـ token لإعادة استخدامه
+            data:    list.map(c => ({ id: String(c.id), title: c.title || c.name || "Unknown" }))
+        });
+    } catch(e) {
+        return res.json({ success: false, error: e.message });
+    }
+});
+
+// ================================================================
+// جلب قنوات فئة معينة فقط
+// ================================================================
+app.post('/api/get_category_items', async (req, res) => {
+    const { server, mac, type, categoryId, token } = req.body;
+    if (!server || !mac || !type)
+        return res.json({ success: false, error: "Missing params" });
+
+    try {
+        // استخدم الـ token الموجود أو اعمل handshake جديد
+        let tk = token;
+        if (!tk) {
+            const hsRaw = await callStalkerDirect(server, mac, "stb", "handshake", null);
+            tk = hsRaw?.js?.token;
+        }
+        if (!tk) return res.json({ success: false, error: "MAC Blocked" });
+
+        const items = await fetchContentStrict(server, mac, type, [categoryId], categoryId, tk);
+        const formatted = items.map(item => ({
+            id:   String(item.id || item.cmd),
+            name: item.name || item.cmd || "Unknown",
+            logo: item.logo || item.screenshot_uri || ""
+        }));
+
+        return res.json({ success: true, data: formatted });
+    } catch(e) {
+        return res.json({ success: false, error: e.message });
+    }
+});
 // ================================================================
 // Proxy Stream (نسخة واحدة نظيفة مع Cloudflare Worker Fallback)
 // ================================================================
