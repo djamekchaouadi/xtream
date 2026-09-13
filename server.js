@@ -263,27 +263,100 @@ app.post('/create_account', async (req, res) => {
     } catch(e) { res.json({success: false, error: e.message}); }
 });
 
-app.get('/api/scan', async (req, res) => {
-    let server = req.query.server;
-    let mac = req.query.mac;
+// ================================================================
+// 🔧 PATCH للسيرفر Node.js الخاص بك (server.js / index.js)
+// استبدل فقط المسار الموجود /proxy_stream بهذا الكود الكامل
+// ================================================================
+
+// 🚀 مسار المعاينة الذكي مع نظام التخفي + دعم Worker
+app.get('/proxy_stream', async (req, res) => {
+    let { server, mac, stream_id, type, resolve_only } = req.query;
+    
     try {
-        let hsRaw = await callStalkerDirect(server, mac, "stb", "handshake", null);
-        let tk = hsRaw?.js?.token;
-        if(!tk) return res.json({success: false, error: "الماك محظور أو السيرفر لا يستجيب"});
+        let tkRes = await callStalkerDirect(server, mac, "stb", "handshake", null);
+        let tk = tkRes?.js?.token;
+        if (!tk) return res.status(403).send("Blocked");
 
-        let liveRes = await callStalkerDirect(server, mac, "itv", "get_genres", tk);
-        let vodRes = await callStalkerDirect(server, mac, "vod", "get_categories", tk);
-        let seriesRes = await callStalkerDirect(server, mac, "series", "get_categories", tk).catch(()=>({js:[]}));
+        let streamUrl = "";
 
-        let formatCats = (arr) => {
-            let list = Array.isArray(arr) ? arr : Object.values(arr||{});
-            return list.map(c => ({id: String(c.id), title: String(c.title || c.name)}));
+        if (type === 'vod' || type === 'movie') {
+            streamUrl = `${server}/play/movie.php?mac=${mac}&stream=${stream_id}.mkv&type=movie`;
+        } else {
+            // البث المباشر: نحتاج create_link للحصول على الرابط الحقيقي
+            streamUrl = `${server}/play/live.php?mac=${mac}&stream=${stream_id}&extension=ts`;
+            let cmd = encodeURIComponent(`ffmpeg localhost/ch/${stream_id}`);
+            let linkRes = await callStalkerDirect(server, mac, "itv", `create_link&cmd=${cmd}`, tk);
+            if (linkRes?.js?.cmd && !linkRes.js.cmd.includes('.m3u8')) {
+                streamUrl = linkRes.js.cmd.startsWith('ffmpeg ')
+                    ? linkRes.js.cmd.split(' ').pop()
+                    : linkRes.js.cmd;
+            }
+        }
+
+        if (!streamUrl) return res.status(404).send("Stream not found");
+
+        // ====================================================
+        // إذا الطلب من Cloudflare Worker (resolve_only=1)
+        // نرجع الرابط الحقيقي كـ JSON بدل البث المباشر
+        // ====================================================
+        if (resolve_only === '1') {
+            return res.json({
+                success: true,
+                stream_url: streamUrl,
+                type: type
+            });
+        }
+
+        // ====================================================
+        // البث المعتاد (من Blazor مباشرة أو أي مشغل)
+        // ====================================================
+        const randomIP = `197.${Math.floor(Math.random() * 255)}.${Math.floor(Math.random() * 255)}.${Math.floor(Math.random() * 255)}`;
+
+        const reqHeaders = {
+            "User-Agent": "VLC/3.0.9 LibVLC/3.0.9",
+            "Accept": "*/*",
+            "Connection": "keep-alive",
+            "X-Forwarded-For": randomIP,
+            "X-Real-IP": randomIP,
+            "Client-IP": randomIP
         };
 
-        res.json({ success: true, categories: { live: formatCats(liveRes?.js), vod: formatCats(vodRes?.js), series: formatCats(seriesRes?.js) } });
-    } catch(e) { res.json({success: false, error: e.message}); }
-});
+        if (req.headers.range) {
+            reqHeaders["Range"] = req.headers.range;
+        }
 
+        const fetchRes = await fetch(streamUrl, {
+            headers: reqHeaders,
+            redirect: 'follow',
+            timeout: 0
+        });
+
+        if (!fetchRes.ok && fetchRes.status !== 206) {
+            return res.status(fetchRes.status).send("Stream Error");
+        }
+
+        res.status(fetchRes.status);
+
+        res.setHeader('Access-Control-Allow-Origin', '*');
+        res.setHeader('Access-Control-Allow-Methods', 'GET, HEAD, OPTIONS');
+        res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Range, Accept-Ranges');
+        res.setHeader('Access-Control-Expose-Headers', 'Content-Range, Accept-Ranges, Content-Length, Content-Type');
+
+        const headersToForward = ['content-type', 'content-length', 'content-range', 'accept-ranges'];
+        headersToForward.forEach(h => {
+            if (fetchRes.headers.has(h)) res.setHeader(h, fetchRes.headers.get(h));
+        });
+
+        if (!res.getHeader('Content-Type')) {
+            res.setHeader('Content-Type', (type === 'vod' || type === 'movie') ? 'video/mp4' : 'video/mp2t');
+        }
+
+        streamToResponse(fetchRes.body, res, req);
+
+    } catch (e) {
+        res.status(500).send("Proxy Error");
+    }
+});
 app.post('/api/get_items', async (req, res) => {
     const { server, mac, type, selectedCats } = req.body;
     try {
