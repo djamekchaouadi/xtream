@@ -317,13 +317,21 @@ app.post('/create_account', async (req, res) => {
 // ================================================================
 // Proxy Stream — نسخة نظيفة للـ Worker Fallback
 // ================================================================
+// ================================================================
+// Proxy Stream — نسخة نظيفة للـ Worker Fallback
+// ================================================================
 async function routeViaWorker(req, res, streamUrl, type) {
     try {
-        if (!CLOUDFLARE_WORKER_URL) {
+        if (!CLOUDFLARE_WORKER_URL || CLOUDFLARE_WORKER_URL.includes('ضع-اسم')) {
              return res.status(500).send("Worker URL is not configured properly in Node.js");
         }
         const workerUrl = `${CLOUDFLARE_WORKER_URL}/stream?url=${encodeURIComponent(streamUrl)}`;
-        const headers   = { "User-Agent":"VLC/3.0.9 LibVLC/3.0.9", "Accept":"*/*" };
+        
+        // 🚀 التعديل الأول: استخدام يوزر ايجنت الـ MAG لتخطي الحظر (403)
+        const headers   = { 
+            "User-Agent": "Mozilla/5.0 (QtEmbedded; U; Linux; C) AppleWebKit/533.3 (KHTML, like Gecko) MAG200 stbapp ver: 2 rev: 250 Safari/533.3", 
+            "Accept": "*/*" 
+        };
         if (req.headers.range) headers["Range"] = req.headers.range;
 
         const workerRes = await fetch(workerUrl, { headers, redirect:'follow', timeout:0 });
@@ -341,6 +349,105 @@ async function routeViaWorker(req, res, streamUrl, type) {
     } catch(e) { res.status(500).send("Worker Error: " + e.message); }
 }
 
+app.get('/proxy_stream', async (req, res) => {
+    let { server, mac, stream_id, type, resolve_only } = req.query;
+
+    if (server) {
+        server = server.trim().replace(/\/c\/?$/i, '').replace(/\/+$/, '');
+        if (!server.startsWith('http')) server = 'http://' + server;
+    }
+    if (!server || !mac || !stream_id) return res.status(400).send("Missing params");
+
+    console.log(`[PROXY] server=${server} stream_id=${stream_id} type=${type}`);
+
+    try {
+        // Handshake
+        const tkRes = await callStalkerDirect(server, mac, "stb", "handshake", null);
+        const tk    = tkRes?.js?.token;
+        console.log(`[PROXY] token=${tk}`);
+        if (!tk) return res.status(403).send("MAC Blocked");
+
+        let streamUrl = "";
+
+        if (type === 'vod' || type === 'movie') {
+            streamUrl = `${server}/play/movie.php?mac=${mac}&stream=${stream_id}.mkv&type=movie`;
+
+        } else {
+            // ===== LIVE =====
+            const cmd     = encodeURIComponent(`ffmpeg localhost/ch/${stream_id}`);
+            const linkRes = await callStalkerDirect(server, mac, "itv", `create_link&cmd=${cmd}`, tk);
+            console.log(`[PROXY] create_link response=${JSON.stringify(linkRes?.js)}`);
+
+            if (linkRes?.js?.cmd) {
+                const rawCmd = linkRes.js.cmd;
+                streamUrl = rawCmd.startsWith('ffmpeg ') ? rawCmd.split(' ').pop() : rawCmd;
+                
+                const playToken = linkRes.js.play_token || linkRes.js.token_random || null;
+                if (playToken && !streamUrl.includes('play_token=')) {
+                    streamUrl += (streamUrl.includes('?') ? '&' : '?') + `play_token=${playToken}`;
+                }
+            }
+
+            if (!streamUrl) {
+                streamUrl = `${server}/play/live.php?mac=${mac}&stream=${stream_id}&extension=ts`;
+            }
+        }
+
+        console.log(`[PROXY] final streamUrl=${streamUrl}`);
+        if (!streamUrl) return res.status(404).send("Stream not found");
+
+        if (resolve_only === '1') return res.json({ success:true, stream_url:streamUrl, type });
+
+        // 🚀 التعديل الثاني والأهم: استخدام يوزر ايجنت جهاز الـ MAG لتتطابق البيانات مع التوكن ولا يغضب السيرفر
+        const reqHeaders = {
+            "User-Agent": "Mozilla/5.0 (QtEmbedded; U; Linux; C) AppleWebKit/533.3 (KHTML, like Gecko) MAG200 stbapp ver: 2 rev: 250 Safari/533.3",
+            "Accept": "*/*",
+            "Connection": "keep-alive"
+        };
+
+        // 🚀 منع الـ Range في البث المباشر لمنع خطأ 429
+        if (req.headers.range && (type === 'vod' || type === 'movie')) {
+            reqHeaders["Range"] = req.headers.range;
+        }
+
+        let fetchRes;
+        try {
+            fetchRes = await fetch(streamUrl, { headers:reqHeaders, redirect:'follow', timeout:15000 });
+        } catch(fetchErr) {
+            console.log(`[PROXY] fetch failed: ${fetchErr.message} → Worker`);
+            return routeViaWorker(req, res, streamUrl, type);
+        }
+
+        console.log(`[PROXY] stream status=${fetchRes.status}`);
+
+        if (fetchRes.status === 429) {
+            return res.status(429).send("Too Many Connections (429). The IPTV server allows only 1 connection.");
+        }
+
+        if ([403, 407, 511].includes(fetchRes.status) || fetchRes.status >= 500) {
+            console.log(`[PROXY] Blocked (${fetchRes.status}) → Worker`);
+            return routeViaWorker(req, res, streamUrl, type);
+        }
+        
+        if (!fetchRes.ok && fetchRes.status !== 206)
+            return res.status(fetchRes.status).send(`Stream Error: ${fetchRes.status}`);
+
+        res.status(fetchRes.status);
+        setCorsHeaders(res);
+        ['content-type','content-length','content-range','accept-ranges'].forEach(h => {
+            if (fetchRes.headers.has(h)) res.setHeader(h, fetchRes.headers.get(h));
+        });
+        if (!res.getHeader('Content-Type'))
+            res.setHeader('Content-Type', (type==='vod'||type==='movie') ? 'video/mp4' : 'video/mp2t');
+        streamToResponse(fetchRes.body, res, req);
+
+    } catch(e) {
+        console.error(`[PROXY] Exception: ${e.message}`);
+        try {
+            return routeViaWorker(req, res, `${server}/play/live.php?mac=${mac}&stream=${stream_id}&extension=ts`, type);
+        } catch { res.status(500).send("Proxy Error: " + e.message); }
+    }
+});
 // ================================================================
 // Proxy Stream (المحصن ضد خطأ 429 والاتصالات المزدوجة)
 // ================================================================
