@@ -488,6 +488,9 @@ app.get('/xtream/epg', async (req, res) => {
 // ================================================================
 // 🚀 XTREAM: Proxy Stream (يحل CORS لمشغل الفيديو)
 // ================================================================
+// ================================================================
+// 🚀 XTREAM: Proxy Stream (يحل CORS و 401 لمشغل الفيديو)
+// ================================================================
 app.get('/xtream/stream', async (req, res) => {
     const { host, user, pass, stream_id, type, ext } = req.query;
     if (!host || !user || !pass || !stream_id) return res.status(400).send("Missing params");
@@ -496,9 +499,9 @@ app.get('/xtream/stream', async (req, res) => {
     const extension = ext || "ts";
 
     if (type === "movie") {
-        streamUrl = `${host}/movie/${user}/${pass}/${stream_id}.${extension}`;
+        streamUrl = `${host}/movie/${user}/${pass}/${stream_id}.${extension === 'ts' ? 'mp4' : extension}`;
     } else if (type === "series") {
-        streamUrl = `${host}/series/${user}/${pass}/${stream_id}.${extension}`;
+        streamUrl = `${host}/series/${user}/${pass}/${stream_id}.${extension === 'ts' ? 'mp4' : extension}`;
     } else {
         streamUrl = `${host}/live/${user}/${pass}/${stream_id}.${extension}`;
     }
@@ -506,8 +509,9 @@ app.get('/xtream/stream', async (req, res) => {
     console.log(`[XTREAM/STREAM] ${streamUrl}`);
 
     try {
+        // 🌟 1. تمويه الهوية كأننا تطبيق أندرويد حقيقي (ExoPlayer) لمنع الحظر
         const headers = {
-            "User-Agent": "Mozilla/5.0",
+            "User-Agent": "ExoPlayer/2.18.1 (Linux; Android 11) ExoPlayerLib/2.18.1",
             "Accept": "*/*",
             "Connection": "keep-alive"
         };
@@ -516,7 +520,10 @@ app.get('/xtream/stream', async (req, res) => {
         const fetchRes = await fetch(streamUrl, { headers, redirect: 'follow', timeout: 15000 });
 
         if (fetchRes.status === 429) return res.status(429).send("Too Many Connections");
-        if ([403, 407, 511].includes(fetchRes.status) || fetchRes.status >= 500) {
+
+        // 🌟 2. السطر السحري: إذا تم حظرنا بـ 401 أو 403، نحول البث فوراً عبر Cloudflare Worker!
+        if ([401, 403, 407, 511].includes(fetchRes.status) || fetchRes.status >= 500) {
+            console.log(`[XTREAM] Blocked with ${fetchRes.status}. Routing via Cloudflare Worker...`);
             const workerUrl = `${CLOUDFLARE_WORKER_URL}/stream?url=${encodeURIComponent(streamUrl)}`;
             const workerRes = await fetch(workerUrl, { headers, redirect: 'follow', timeout: 0 });
             res.status(workerRes.status);
@@ -541,14 +548,13 @@ app.get('/xtream/stream', async (req, res) => {
         console.error('[XTREAM/STREAM] Error:', e.message);
         try {
             const workerUrl = `${CLOUDFLARE_WORKER_URL}/stream?url=${encodeURIComponent(streamUrl)}`;
-            const workerRes = await fetch(workerUrl, { headers: { "User-Agent": "Mozilla/5.0" }, redirect: 'follow', timeout: 0 });
+            const workerRes = await fetch(workerUrl, { headers: { "User-Agent": "ExoPlayer/2.18.1" }, redirect: 'follow', timeout: 0 });
             res.status(workerRes.status);
             setCorsHeaders(res);
             streamToResponse(workerRes.body, res, req);
         } catch(e2) { res.status(500).send("Stream Error: " + e2.message); }
     }
 });
-
 // ================================================================
 // Stalker: جلب الفئات
 // ================================================================
