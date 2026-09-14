@@ -242,6 +242,94 @@ app.get('/stalker/profile', async (req, res) => {
 });
 
 // ================================================================
+// Stalker: Account Info (🚀 نفس الأندرويد تماماً - يجلب Expire الحقيقي)
+// ================================================================
+app.get('/stalker/account', async (req, res) => {
+    const { portal, mac, token } = req.query;
+    if (!portal || !mac || !token) return res.status(400).json({ success: false, error: "Missing params" });
+    
+    try {
+        const spoofedIP = getSpoofedIP(mac);
+        const headers = {
+            "User-Agent":       "Mozilla/5.0 (QtEmbedded; U; Linux; C) AppleWebKit/533.3 (KHTML, like Gecko) MAG200 stbapp ver: 2 rev: 250 Safari/533.3",
+            "Referer":          `${portal}/c/`,
+            "Cookie":           `mac=${mac}; stb_lang=en; timezone=Africa/Algiers;`,
+            "Accept":           "application/json, text/javascript, */*; q=0.01",
+            "X-Requested-With": "XMLHttpRequest",
+            "Authorization":    `Bearer ${token}`,
+            "X-Forwarded-For":  spoofedIP,
+            "X-Real-IP":        spoofedIP,
+            "Client-IP":        spoofedIP
+        };
+
+        // 🚀 المحاولة 1: account_info (نفس الأندرويد)
+        let exp = null;
+        try {
+            const accountUrl = `${portal}/portal.php?type=account_info&action=get_main_info&JsHttpRequest=1-xml`;
+            const accountRes = await fetch(accountUrl, { headers, timeout: 30000 });
+            if (accountRes.ok) {
+                const accountJson = await accountRes.json();
+                const js = accountJson?.js;
+                // الأندرويد يقرأ phone أولاً ثم exp_date
+                exp = js?.phone;
+                if (!exp || exp === "" || exp === "0000-00-00 00:00:00")
+                    exp = js?.exp_date;
+                
+                console.log(`[ACCOUNT_INFO] js.phone=${js?.phone} js.exp_date=${js?.exp_date}`);
+            }
+        } catch(e) { console.log('[ACCOUNT_INFO] failed:', e.message); }
+
+        // 🚀 المحاولة 2: get_profile مع كل الحقول
+        if (!exp || exp === "" || exp === "0000-00-00 00:00:00" || exp === "0") {
+            try {
+                const profileUrl = `${portal}/server/load.php?type=stb&action=get_profile&JsHttpRequest=1-xml&token=${token}`;
+                const profileRes = await fetch(profileUrl, { headers, timeout: 30000 });
+                if (profileRes.ok) {
+                    const profileJson = await profileRes.json();
+                    const js = profileJson?.js;
+                    exp = js?.expire_billing_date;
+                    if (!exp || exp === "0000-00-00 00:00:00")
+                        exp = js?.tariff_plan_expired_date;
+                    if (!exp || exp === "0000-00-00 00:00:00")
+                        exp = js?.end_date;
+                    if (!exp || exp === "0000-00-00 00:00:00")
+                        exp = js?.exp_date;
+                    if (!exp || exp === "0000-00-00 00:00:00")
+                        exp = js?.phone;
+                    
+                    console.log(`[GET_PROFILE] expire_billing_date=${js?.expire_billing_date} phone=${js?.phone}`);
+                }
+            } catch(e) { console.log('[GET_PROFILE] failed:', e.message); }
+        }
+
+        // 🚀 المحاولة 3: stalker_portal account_info مسار بديل
+        if (!exp || exp === "" || exp === "0000-00-00 00:00:00" || exp === "0") {
+            try {
+                const altUrl = `${portal}/stalker_portal/server/load.php?type=account_info&action=get_main_info&JsHttpRequest=1-xml`;
+                const altRes = await fetch(altUrl, { headers, timeout: 30000 });
+                if (altRes.ok) {
+                    const altJson = await altRes.json();
+                    const js = altJson?.js;
+                    exp = js?.phone || js?.exp_date || js?.expire_billing_date;
+                    console.log(`[ALT_ACCOUNT] result=${exp}`);
+                }
+            } catch(e) { console.log('[ALT_ACCOUNT] failed:', e.message); }
+        }
+
+        const isEmpty = !exp || exp === "" || exp === "0000-00-00 00:00:00" || exp === "0";
+        
+        return res.json({
+            success: true,
+            exp_date: isEmpty ? null : exp,
+            raw: exp
+        });
+
+    } catch(e) {
+        console.error('[ACCOUNT] Error:', e.message);
+        return res.status(500).json({ success: false, error: e.message });
+    }
+});
+// ================================================================
 // Stalker: جلب الفئات
 // ================================================================
 app.post('/api/get_categories', async (req, res) => {
