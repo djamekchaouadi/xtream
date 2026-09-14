@@ -8,7 +8,7 @@ const app = express();
 const PORT = process.env.PORT || 3000;
 
 const FIREBASE_URL = "https://gamerdz1517-db-default-rtdb.europe-west1.firebasedatabase.app";
-const CLOUDFLARE_WORKER_URL = "https://xt81.djamelchaouadi.workers.dev"; // رابط الووركر الخاص بك
+const CLOUDFLARE_WORKER_URL = "https://xt81.djamelchaouadi.workers.dev";
 
 process.on('uncaughtException', (err) => console.error('Caught exception:', err));
 process.on('unhandledRejection', (reason) => console.error('Unhandled Rejection:', reason));
@@ -26,9 +26,6 @@ app.use((req, res, next) => {
     next();
 });
 
-// ================================================================
-// 🚀 الخوارزمية السحرية: تحويل الـ MAC إلى IP منزلي ثابت لا يتغير!
-// ================================================================
 function getSpoofedIP(mac) {
     if (!mac) return '197.22.14.11';
     let hash = 0;
@@ -41,9 +38,6 @@ function getSpoofedIP(mac) {
     return `197.${(hash % 200) + 10}.${((hash >> 8) % 200) + 10}.${((hash >> 16) % 200) + 10}`;
 }
 
-// ================================================================
-// دوال مشتركة
-// ================================================================
 function streamToResponse(fetchBody, res, req) {
     if (fetchBody.on && typeof fetchBody.on === 'function') {
         fetchBody.on('data', (chunk) => { if (!res.writableEnded) res.write(chunk); });
@@ -242,12 +236,11 @@ app.get('/stalker/profile', async (req, res) => {
 });
 
 // ================================================================
-// Stalker: Account Info (🚀 نفس الأندرويد تماماً - يجلب Expire الحقيقي)
+// Stalker: Account Info — يجلب Expire الحقيقي
 // ================================================================
 app.get('/stalker/account', async (req, res) => {
     const { portal, mac, token } = req.query;
     if (!portal || !mac || !token) return res.status(400).json({ success: false, error: "Missing params" });
-    
     try {
         const spoofedIP = getSpoofedIP(mac);
         const headers = {
@@ -262,73 +255,300 @@ app.get('/stalker/account', async (req, res) => {
             "Client-IP":        spoofedIP
         };
 
-        // 🚀 المحاولة 1: account_info (نفس الأندرويد)
         let exp = null;
+
+        // محاولة 1: account_info
         try {
             const accountUrl = `${portal}/portal.php?type=account_info&action=get_main_info&JsHttpRequest=1-xml`;
             const accountRes = await fetch(accountUrl, { headers, timeout: 30000 });
             if (accountRes.ok) {
                 const accountJson = await accountRes.json();
                 const js = accountJson?.js;
-                // الأندرويد يقرأ phone أولاً ثم exp_date
                 exp = js?.phone;
-                if (!exp || exp === "" || exp === "0000-00-00 00:00:00")
-                    exp = js?.exp_date;
-                
-                console.log(`[ACCOUNT_INFO] js.phone=${js?.phone} js.exp_date=${js?.exp_date}`);
+                if (!exp || exp === "" || exp === "0000-00-00 00:00:00") exp = js?.exp_date;
+                console.log(`[ACCOUNT_INFO] phone=${js?.phone} exp_date=${js?.exp_date}`);
             }
         } catch(e) { console.log('[ACCOUNT_INFO] failed:', e.message); }
 
-        // 🚀 المحاولة 2: get_profile مع كل الحقول
+        // محاولة 2: get_profile
         if (!exp || exp === "" || exp === "0000-00-00 00:00:00" || exp === "0") {
             try {
                 const profileUrl = `${portal}/server/load.php?type=stb&action=get_profile&JsHttpRequest=1-xml&token=${token}`;
                 const profileRes = await fetch(profileUrl, { headers, timeout: 30000 });
                 if (profileRes.ok) {
-                    const profileJson = await profileRes.json();
-                    const js = profileJson?.js;
+                    const js = (await profileRes.json())?.js;
                     exp = js?.expire_billing_date;
-                    if (!exp || exp === "0000-00-00 00:00:00")
-                        exp = js?.tariff_plan_expired_date;
-                    if (!exp || exp === "0000-00-00 00:00:00")
-                        exp = js?.end_date;
-                    if (!exp || exp === "0000-00-00 00:00:00")
-                        exp = js?.exp_date;
-                    if (!exp || exp === "0000-00-00 00:00:00")
-                        exp = js?.phone;
-                    
-                    console.log(`[GET_PROFILE] expire_billing_date=${js?.expire_billing_date} phone=${js?.phone}`);
+                    if (!exp || exp === "0000-00-00 00:00:00") exp = js?.tariff_plan_expired_date;
+                    if (!exp || exp === "0000-00-00 00:00:00") exp = js?.end_date;
+                    if (!exp || exp === "0000-00-00 00:00:00") exp = js?.exp_date;
+                    if (!exp || exp === "0000-00-00 00:00:00") exp = js?.phone;
+                    console.log(`[GET_PROFILE] expire=${exp}`);
                 }
             } catch(e) { console.log('[GET_PROFILE] failed:', e.message); }
         }
 
-        // 🚀 المحاولة 3: stalker_portal account_info مسار بديل
+        // محاولة 3: stalker_portal مسار بديل
         if (!exp || exp === "" || exp === "0000-00-00 00:00:00" || exp === "0") {
             try {
                 const altUrl = `${portal}/stalker_portal/server/load.php?type=account_info&action=get_main_info&JsHttpRequest=1-xml`;
                 const altRes = await fetch(altUrl, { headers, timeout: 30000 });
                 if (altRes.ok) {
-                    const altJson = await altRes.json();
-                    const js = altJson?.js;
+                    const js = (await altRes.json())?.js;
                     exp = js?.phone || js?.exp_date || js?.expire_billing_date;
-                    console.log(`[ALT_ACCOUNT] result=${exp}`);
+                    console.log(`[ALT_ACCOUNT] expire=${exp}`);
                 }
             } catch(e) { console.log('[ALT_ACCOUNT] failed:', e.message); }
         }
 
         const isEmpty = !exp || exp === "" || exp === "0000-00-00 00:00:00" || exp === "0";
-        
-        return res.json({
-            success: true,
-            exp_date: isEmpty ? null : exp,
-            raw: exp
-        });
-
+        return res.json({ success: true, exp_date: isEmpty ? null : exp, raw: exp });
     } catch(e) {
         console.error('[ACCOUNT] Error:', e.message);
         return res.status(500).json({ success: false, error: e.message });
     }
 });
+
+// ================================================================
+// 🚀 XTREAM: Verify — التحقق من صحة البيانات وجلب Expire
+// ================================================================
+app.get('/xtream/verify', async (req, res) => {
+    const { host, user, pass } = req.query;
+    if (!host || !user || !pass) return res.status(400).json({ valid: false, error: "Missing params" });
+    try {
+        const url = `${host}/player_api.php?username=${user}&password=${pass}`;
+        const response = await fetch(url, {
+            headers: { "User-Agent": "Mozilla/5.0" },
+            timeout: 30000
+        });
+        if (!response.ok) return res.json({ valid: false, error: `HTTP ${response.status}` });
+        const data = await response.json();
+        if (!data?.user_info) return res.json({ valid: false, error: "Invalid response" });
+
+        const status = data.user_info?.status ?? "";
+        const expRaw = data.user_info?.exp_date ?? null;
+        const isValid = status.toLowerCase() === "active";
+
+        let expDate = "Unlimited";
+        if (expRaw && expRaw !== "0" && expRaw !== "") {
+            if (/^\d+$/.test(expRaw)) {
+                const dt = new Date(parseInt(expRaw) * 1000);
+                expDate = dt.toLocaleDateString('en-US', { year:'numeric', month:'short', day:'2-digit' });
+            } else {
+                expDate = expRaw;
+            }
+        }
+
+        console.log(`[XTREAM/VERIFY] host=${host} user=${user} status=${status} exp=${expDate}`);
+        return res.json({ valid: isValid, status, exp_date: expDate, user_info: data.user_info, server_info: data.server_info });
+    } catch(e) {
+        console.error('[XTREAM/VERIFY] Error:', e.message);
+        return res.json({ valid: true, exp_date: "Unknown", error: e.message });
+    }
+});
+
+// ================================================================
+// 🚀 XTREAM: Get Live Categories
+// ================================================================
+app.get('/xtream/live/categories', async (req, res) => {
+    const { host, user, pass } = req.query;
+    if (!host || !user || !pass) return res.status(400).json({ success: false, error: "Missing params" });
+    try {
+        const url = `${host}/player_api.php?username=${user}&password=${pass}&action=get_live_categories`;
+        const response = await fetch(url, { headers: { "User-Agent": "Mozilla/5.0" }, timeout: 30000 });
+        if (!response.ok) return res.json({ success: false, error: `HTTP ${response.status}` });
+        const data = await response.json();
+        return res.json({ success: true, data });
+    } catch(e) { return res.json({ success: false, error: e.message }); }
+});
+
+// ================================================================
+// 🚀 XTREAM: Get VOD Categories
+// ================================================================
+app.get('/xtream/vod/categories', async (req, res) => {
+    const { host, user, pass } = req.query;
+    if (!host || !user || !pass) return res.status(400).json({ success: false, error: "Missing params" });
+    try {
+        const url = `${host}/player_api.php?username=${user}&password=${pass}&action=get_vod_categories`;
+        const response = await fetch(url, { headers: { "User-Agent": "Mozilla/5.0" }, timeout: 30000 });
+        if (!response.ok) return res.json({ success: false, error: `HTTP ${response.status}` });
+        const data = await response.json();
+        return res.json({ success: true, data });
+    } catch(e) { return res.json({ success: false, error: e.message }); }
+});
+
+// ================================================================
+// 🚀 XTREAM: Get Series Categories
+// ================================================================
+app.get('/xtream/series/categories', async (req, res) => {
+    const { host, user, pass } = req.query;
+    if (!host || !user || !pass) return res.status(400).json({ success: false, error: "Missing params" });
+    try {
+        const url = `${host}/player_api.php?username=${user}&password=${pass}&action=get_series_categories`;
+        const response = await fetch(url, { headers: { "User-Agent": "Mozilla/5.0" }, timeout: 30000 });
+        if (!response.ok) return res.json({ success: false, error: `HTTP ${response.status}` });
+        const data = await response.json();
+        return res.json({ success: true, data });
+    } catch(e) { return res.json({ success: false, error: e.message }); }
+});
+
+// ================================================================
+// 🚀 XTREAM: Get Live Streams
+// ================================================================
+app.get('/xtream/live/streams', async (req, res) => {
+    const { host, user, pass, category_id } = req.query;
+    if (!host || !user || !pass) return res.status(400).json({ success: false, error: "Missing params" });
+    try {
+        let url = `${host}/player_api.php?username=${user}&password=${pass}&action=get_live_streams`;
+        if (category_id) url += `&category_id=${category_id}`;
+        const response = await fetch(url, { headers: { "User-Agent": "Mozilla/5.0" }, timeout: 60000 });
+        if (!response.ok) return res.json({ success: false, error: `HTTP ${response.status}` });
+        const data = await response.json();
+        return res.json({ success: true, data });
+    } catch(e) { return res.json({ success: false, error: e.message }); }
+});
+
+// ================================================================
+// 🚀 XTREAM: Get VOD Streams
+// ================================================================
+app.get('/xtream/vod/streams', async (req, res) => {
+    const { host, user, pass, category_id } = req.query;
+    if (!host || !user || !pass) return res.status(400).json({ success: false, error: "Missing params" });
+    try {
+        let url = `${host}/player_api.php?username=${user}&password=${pass}&action=get_vod_streams`;
+        if (category_id) url += `&category_id=${category_id}`;
+        const response = await fetch(url, { headers: { "User-Agent": "Mozilla/5.0" }, timeout: 60000 });
+        if (!response.ok) return res.json({ success: false, error: `HTTP ${response.status}` });
+        const data = await response.json();
+        return res.json({ success: true, data });
+    } catch(e) { return res.json({ success: false, error: e.message }); }
+});
+
+// ================================================================
+// 🚀 XTREAM: Get Series
+// ================================================================
+app.get('/xtream/series/streams', async (req, res) => {
+    const { host, user, pass, category_id } = req.query;
+    if (!host || !user || !pass) return res.status(400).json({ success: false, error: "Missing params" });
+    try {
+        let url = `${host}/player_api.php?username=${user}&password=${pass}&action=get_series`;
+        if (category_id) url += `&category_id=${category_id}`;
+        const response = await fetch(url, { headers: { "User-Agent": "Mozilla/5.0" }, timeout: 60000 });
+        if (!response.ok) return res.json({ success: false, error: `HTTP ${response.status}` });
+        const data = await response.json();
+        return res.json({ success: true, data });
+    } catch(e) { return res.json({ success: false, error: e.message }); }
+});
+
+// ================================================================
+// 🚀 XTREAM: Get Series Info
+// ================================================================
+app.get('/xtream/series/info', async (req, res) => {
+    const { host, user, pass, series_id } = req.query;
+    if (!host || !user || !pass || !series_id) return res.status(400).json({ success: false, error: "Missing params" });
+    try {
+        const url = `${host}/player_api.php?username=${user}&password=${pass}&action=get_series_info&series_id=${series_id}`;
+        const response = await fetch(url, { headers: { "User-Agent": "Mozilla/5.0" }, timeout: 30000 });
+        if (!response.ok) return res.json({ success: false, error: `HTTP ${response.status}` });
+        const data = await response.json();
+        return res.json({ success: true, data });
+    } catch(e) { return res.json({ success: false, error: e.message }); }
+});
+
+// ================================================================
+// 🚀 XTREAM: Get VOD Info
+// ================================================================
+app.get('/xtream/vod/info', async (req, res) => {
+    const { host, user, pass, vod_id } = req.query;
+    if (!host || !user || !pass || !vod_id) return res.status(400).json({ success: false, error: "Missing params" });
+    try {
+        const url = `${host}/player_api.php?username=${user}&password=${pass}&action=get_vod_info&vod_id=${vod_id}`;
+        const response = await fetch(url, { headers: { "User-Agent": "Mozilla/5.0" }, timeout: 30000 });
+        if (!response.ok) return res.json({ success: false, error: `HTTP ${response.status}` });
+        const data = await response.json();
+        return res.json({ success: true, data });
+    } catch(e) { return res.json({ success: false, error: e.message }); }
+});
+
+// ================================================================
+// 🚀 XTREAM: EPG
+// ================================================================
+app.get('/xtream/epg', async (req, res) => {
+    const { host, user, pass, stream_id, limit } = req.query;
+    if (!host || !user || !pass || !stream_id) return res.status(400).json({ success: false, error: "Missing params" });
+    try {
+        const lim = limit || 4;
+        const url = `${host}/player_api.php?username=${user}&password=${pass}&action=get_short_epg&stream_id=${stream_id}&limit=${lim}`;
+        const response = await fetch(url, { headers: { "User-Agent": "Mozilla/5.0" }, timeout: 20000 });
+        if (!response.ok) return res.json({ success: false, error: `HTTP ${response.status}` });
+        const data = await response.json();
+        return res.json({ success: true, data });
+    } catch(e) { return res.json({ success: false, error: e.message }); }
+});
+
+// ================================================================
+// 🚀 XTREAM: Proxy Stream (يحل CORS لمشغل الفيديو)
+// ================================================================
+app.get('/xtream/stream', async (req, res) => {
+    const { host, user, pass, stream_id, type, ext } = req.query;
+    if (!host || !user || !pass || !stream_id) return res.status(400).send("Missing params");
+
+    let streamUrl = "";
+    const extension = ext || "ts";
+
+    if (type === "movie") {
+        streamUrl = `${host}/movie/${user}/${pass}/${stream_id}.${extension}`;
+    } else if (type === "series") {
+        streamUrl = `${host}/series/${user}/${pass}/${stream_id}.${extension}`;
+    } else {
+        streamUrl = `${host}/live/${user}/${pass}/${stream_id}.${extension}`;
+    }
+
+    console.log(`[XTREAM/STREAM] ${streamUrl}`);
+
+    try {
+        const headers = {
+            "User-Agent": "Mozilla/5.0",
+            "Accept": "*/*",
+            "Connection": "keep-alive"
+        };
+        if (req.headers.range) headers["Range"] = req.headers.range;
+
+        const fetchRes = await fetch(streamUrl, { headers, redirect: 'follow', timeout: 15000 });
+
+        if (fetchRes.status === 429) return res.status(429).send("Too Many Connections");
+        if ([403, 407, 511].includes(fetchRes.status) || fetchRes.status >= 500) {
+            const workerUrl = `${CLOUDFLARE_WORKER_URL}/stream?url=${encodeURIComponent(streamUrl)}`;
+            const workerRes = await fetch(workerUrl, { headers, redirect: 'follow', timeout: 0 });
+            res.status(workerRes.status);
+            setCorsHeaders(res);
+            ['content-type','content-length','content-range','accept-ranges'].forEach(h => {
+                if (workerRes.headers.has(h)) res.setHeader(h, workerRes.headers.get(h));
+            });
+            return streamToResponse(workerRes.body, res, req);
+        }
+
+        if (!fetchRes.ok && fetchRes.status !== 206) return res.status(fetchRes.status).send(`Stream Error: ${fetchRes.status}`);
+
+        res.status(fetchRes.status);
+        setCorsHeaders(res);
+        ['content-type','content-length','content-range','accept-ranges'].forEach(h => {
+            if (fetchRes.headers.has(h)) res.setHeader(h, fetchRes.headers.get(h));
+        });
+        if (!res.getHeader('Content-Type'))
+            res.setHeader('Content-Type', (type === 'movie' || type === 'series') ? 'video/mp4' : 'video/mp2t');
+        streamToResponse(fetchRes.body, res, req);
+    } catch(e) {
+        console.error('[XTREAM/STREAM] Error:', e.message);
+        try {
+            const workerUrl = `${CLOUDFLARE_WORKER_URL}/stream?url=${encodeURIComponent(streamUrl)}`;
+            const workerRes = await fetch(workerUrl, { headers: { "User-Agent": "Mozilla/5.0" }, redirect: 'follow', timeout: 0 });
+            res.status(workerRes.status);
+            setCorsHeaders(res);
+            streamToResponse(workerRes.body, res, req);
+        } catch(e2) { res.status(500).send("Stream Error: " + e2.message); }
+    }
+});
+
 // ================================================================
 // Stalker: جلب الفئات
 // ================================================================
@@ -339,11 +559,9 @@ app.post('/api/get_categories', async (req, res) => {
         const hs  = await callStalkerDirect(server, mac, "stb", "handshake", null);
         const tk  = hs?.js?.token;
         if (!tk) return res.json({ success:false, error:"MAC Blocked" });
-
         const action = type === "itv" ? "get_genres" : "get_categories";
         const catRaw = await callStalkerDirect(server, mac, type, action, tk);
         const list   = catRaw?.js ? (Array.isArray(catRaw.js) ? catRaw.js : Object.values(catRaw.js)) : [];
-
         return res.json({ success: true, token: tk, data: list.map(c => ({ id: String(c.id), title: c.title || c.name || "Unknown" })) });
     } catch(e) { return res.json({ success:false, error:e.message }); }
 });
@@ -358,13 +576,8 @@ app.post('/api/get_category_items', async (req, res) => {
             tk = hs?.js?.token;
         }
         if (!tk) return res.json({ success:false, error:"MAC Blocked" });
-
         const items     = await fetchContentStrict(server, mac, type, [categoryId], categoryId, tk);
-        const formatted = items.map(item => ({
-            id:   String(item.id || item.cmd),
-            name: item.name || item.cmd || "Unknown",
-            logo: item.logo || item.screenshot_uri || ""
-        }));
+        const formatted = items.map(item => ({ id: String(item.id || item.cmd), name: item.name || item.cmd || "Unknown", logo: item.logo || item.screenshot_uri || "" }));
         return res.json({ success:true, data:formatted });
     } catch(e) { return res.json({ success:false, error:e.message }); }
 });
@@ -375,152 +588,73 @@ app.post('/api/get_items', async (req, res) => {
         const hs = await callStalkerDirect(server, mac, "stb", "handshake", null);
         const tk = hs?.js?.token;
         if (!tk) return res.json({ success:false, error:"MAC Blocked" });
-
         const items     = await fetchContentStrict(server, mac, type, selectedCats, null, tk);
-        const formatted = items.map(item => ({
-            id:   item.id || item.cmd,
-            name: item.name || item.cmd,
-            logo: item.logo || item.screenshot_uri || ""
-        }));
+        const formatted = items.map(item => ({ id: item.id || item.cmd, name: item.name || item.cmd, logo: item.logo || item.screenshot_uri || "" }));
         res.json({ success:true, data:formatted });
     } catch(e) { res.json({ success:false, error:e.message }); }
 });
 
 // ================================================================
-// Proxy Stream
+// Proxy Stream (Stalker)
 // ================================================================
 async function routeViaWorker(req, res, streamUrl, type, mac) {
     try {
-        if (!CLOUDFLARE_WORKER_URL || CLOUDFLARE_WORKER_URL.includes('ضع-اسم')) {
-             return res.status(500).send("Worker URL is not configured properly in Node.js");
-        }
         const workerUrl = `${CLOUDFLARE_WORKER_URL}/stream?url=${encodeURIComponent(streamUrl)}`;
-        
         const spoofedIP = getSpoofedIP(mac);
-        const headers   = { 
-            "User-Agent": "Mozilla/5.0 (QtEmbedded; U; Linux; C) AppleWebKit/533.3 (KHTML, like Gecko) MAG200 stbapp ver: 2 rev: 250 Safari/533.3", 
-            "Accept": "*/*",
-            "X-Forwarded-For": spoofedIP,
-            "X-Real-IP":       spoofedIP,
-            "Client-IP":       spoofedIP
-        };
-        if (req.headers.range && (type === 'vod' || type === 'movie')) {
-            headers["Range"] = req.headers.range;
-        }
-
+        const headers   = { "User-Agent": "Mozilla/5.0 (QtEmbedded; U; Linux; C) AppleWebKit/533.3 (KHTML, like Gecko) MAG200 stbapp ver: 2 rev: 250 Safari/533.3", "Accept": "*/*", "X-Forwarded-For": spoofedIP, "X-Real-IP": spoofedIP, "Client-IP": spoofedIP };
+        if (req.headers.range && (type === 'vod' || type === 'movie')) headers["Range"] = req.headers.range;
         const workerRes = await fetch(workerUrl, { headers, redirect:'follow', timeout:0 });
-        if (!workerRes.ok && workerRes.status !== 206)
-            return res.status(workerRes.status).send(`Worker Error: ${workerRes.status}`);
-
+        if (!workerRes.ok && workerRes.status !== 206) return res.status(workerRes.status).send(`Worker Error: ${workerRes.status}`);
         res.status(workerRes.status);
         setCorsHeaders(res);
-        ['content-type','content-length','content-range','accept-ranges'].forEach(h => {
-            if (workerRes.headers.has(h)) res.setHeader(h, workerRes.headers.get(h));
-        });
-        if (!res.getHeader('Content-Type'))
-            res.setHeader('Content-Type', (type==='vod'||type==='movie') ? 'video/mp4' : 'video/mp2t');
+        ['content-type','content-length','content-range','accept-ranges'].forEach(h => { if (workerRes.headers.has(h)) res.setHeader(h, workerRes.headers.get(h)); });
+        if (!res.getHeader('Content-Type')) res.setHeader('Content-Type', (type==='vod'||type==='movie') ? 'video/mp4' : 'video/mp2t');
         streamToResponse(workerRes.body, res, req);
     } catch(e) { res.status(500).send("Worker Error: " + e.message); }
 }
 
 app.get('/proxy_stream', async (req, res) => {
     let { server, mac, stream_id, type, resolve_only } = req.query;
-
-    if (server) {
-        server = server.trim().replace(/\/c\/?$/i, '').replace(/\/+$/, '');
-        if (!server.startsWith('http')) server = 'http://' + server;
-    }
+    if (server) { server = server.trim().replace(/\/c\/?$/i, '').replace(/\/+$/, ''); if (!server.startsWith('http')) server = 'http://' + server; }
     if (!server || !mac || !stream_id) return res.status(400).send("Missing params");
-
     console.log(`[PROXY] server=${server} stream_id=${stream_id} type=${type}`);
-
     try {
         const tkRes = await callStalkerDirect(server, mac, "stb", "handshake", null);
         const tk    = tkRes?.js?.token;
-        console.log(`[PROXY] token=${tk}`);
         if (!tk) return res.status(403).send("MAC Blocked");
-
         let streamUrl = "";
-
         if (type === 'vod' || type === 'movie') {
             streamUrl = `${server}/play/movie.php?mac=${mac}&stream=${stream_id}.mkv&type=movie`;
         } else {
-            // ===== LIVE =====
             const cmd = encodeURIComponent(`ffmpeg localhost/ch/${stream_id}`);
             const linkRes = await callStalkerDirect(server, mac, "itv", `create_link&cmd=${cmd}`, tk);
-            
             const pt = linkRes?.js?.play_token || linkRes?.js?.token_random || null;
-
             if (linkRes?.js?.cmd) {
                 const rawCmd = linkRes.js.cmd;
                 streamUrl = rawCmd.startsWith('ffmpeg ') ? rawCmd.split(' ').pop() : rawCmd;
-                if (pt && !streamUrl.includes('play_token=')) {
-                    streamUrl += (streamUrl.includes('?') ? '&' : '?') + `play_token=${pt}`;
-                }
+                if (pt && !streamUrl.includes('play_token=')) streamUrl += (streamUrl.includes('?') ? '&' : '?') + `play_token=${pt}`;
             }
-
-            if (!streamUrl) {
-                streamUrl = `${server}/play/live.php?mac=${mac}&stream=${stream_id}&extension=ts`;
-                if (pt) streamUrl += `&play_token=${pt}`;
-            }
+            if (!streamUrl) { streamUrl = `${server}/play/live.php?mac=${mac}&stream=${stream_id}&extension=ts`; if (pt) streamUrl += `&play_token=${pt}`; }
         }
-
-        console.log(`[PROXY] final streamUrl=${streamUrl}`);
         if (!streamUrl) return res.status(404).send("Stream not found");
-
         if (resolve_only === '1') return res.json({ success:true, stream_url:streamUrl, type });
-
-        // 🚀 الـ IP الثابت والموثوق
         const spoofedIP = getSpoofedIP(mac);
-        const reqHeaders = {
-            "User-Agent": "Mozilla/5.0 (QtEmbedded; U; Linux; C) AppleWebKit/533.3 (KHTML, like Gecko) MAG200 stbapp ver: 2 rev: 250 Safari/533.3",
-            "Accept": "*/*",
-            "Connection": "keep-alive",
-            "X-Forwarded-For": spoofedIP,
-            "X-Real-IP":       spoofedIP,
-            "Client-IP":       spoofedIP
-        };
-
-        if (req.headers.range && (type === 'vod' || type === 'movie')) {
-            reqHeaders["Range"] = req.headers.range;
-        }
-
+        const reqHeaders = { "User-Agent": "Mozilla/5.0 (QtEmbedded; U; Linux; C) AppleWebKit/533.3 (KHTML, like Gecko) MAG200 stbapp ver: 2 rev: 250 Safari/533.3", "Accept": "*/*", "Connection": "keep-alive", "X-Forwarded-For": spoofedIP, "X-Real-IP": spoofedIP, "Client-IP": spoofedIP };
+        if (req.headers.range && (type === 'vod' || type === 'movie')) reqHeaders["Range"] = req.headers.range;
         let fetchRes;
-        try {
-            fetchRes = await fetch(streamUrl, { headers:reqHeaders, redirect:'follow', timeout:15000 });
-        } catch(fetchErr) {
-            console.log(`[PROXY] fetch failed: ${fetchErr.message} → Worker`);
-            return routeViaWorker(req, res, streamUrl, type, mac);
-        }
-
-        console.log(`[PROXY] stream status=${fetchRes.status}`);
-
-        if (fetchRes.status === 429) {
-            return res.status(429).send("Too Many Connections (429). The IPTV server allows only 1 connection.");
-        }
-
-        if ([403, 407, 511].includes(fetchRes.status) || fetchRes.status >= 500) {
-            console.log(`[PROXY] Blocked (${fetchRes.status}) → Worker`);
-            return routeViaWorker(req, res, streamUrl, type, mac);
-        }
-
-        if (!fetchRes.ok && fetchRes.status !== 206)
-            return res.status(fetchRes.status).send(`Stream Error: ${fetchRes.status}`);
-
+        try { fetchRes = await fetch(streamUrl, { headers:reqHeaders, redirect:'follow', timeout:15000 }); }
+        catch(fetchErr) { return routeViaWorker(req, res, streamUrl, type, mac); }
+        if (fetchRes.status === 429) return res.status(429).send("Too Many Connections (429).");
+        if ([403, 407, 511].includes(fetchRes.status) || fetchRes.status >= 500) return routeViaWorker(req, res, streamUrl, type, mac);
+        if (!fetchRes.ok && fetchRes.status !== 206) return res.status(fetchRes.status).send(`Stream Error: ${fetchRes.status}`);
         res.status(fetchRes.status);
         setCorsHeaders(res);
-        ['content-type','content-length','content-range','accept-ranges'].forEach(h => {
-            if (fetchRes.headers.has(h)) res.setHeader(h, fetchRes.headers.get(h));
-        });
-        if (!res.getHeader('Content-Type'))
-            res.setHeader('Content-Type', (type==='vod'||type==='movie') ? 'video/mp4' : 'video/mp2t');
+        ['content-type','content-length','content-range','accept-ranges'].forEach(h => { if (fetchRes.headers.has(h)) res.setHeader(h, fetchRes.headers.get(h)); });
+        if (!res.getHeader('Content-Type')) res.setHeader('Content-Type', (type==='vod'||type==='movie') ? 'video/mp4' : 'video/mp2t');
         streamToResponse(fetchRes.body, res, req);
-
     } catch(e) {
-        console.error(`[PROXY] Exception: ${e.message}`);
-        try {
-            return routeViaWorker(req, res, `${server}/play/live.php?mac=${mac}&stream=${stream_id}&extension=ts`, type, mac);
-        } catch { res.status(500).send("Proxy Error: " + e.message); }
+        try { return routeViaWorker(req, res, `${server}/play/live.php?mac=${mac}&stream=${stream_id}&extension=ts`, type, mac); }
+        catch { res.status(500).send("Proxy Error: " + e.message); }
     }
 });
 
